@@ -1,0 +1,142 @@
+
+    // /*转换index从float16到int32, 首先把outputMluPtrS[1]的数据拷贝到cpu上后cast成int32后，再拷贝到mlu上*/
+    // int index_size = outputSizeS[1] / cnrtDataTypeSize(output_data_type[1]);
+    // float* tempindex = (float *) (malloc(sizeof(float)/2 * index_size));
+    // cnrtMemcpy(tempindex, outputMluPtrS[1],sizeof(float)/2*index_size,CNRT_MEM_TRANS_DIR_DEV2HOST);
+    // //先开辟int空间，后使用cnrtCastDataType转换数据类型
+    // int * index_int = (int*)malloc(index_size*sizeof(int));
+    // cnrtCastDataType(tempindex, CNRT_FLOAT16, index_int, CNRT_INT32, index_size, nullptr);
+    // //开辟在mlu上的内存，把index_int拷贝回mlu上
+    // void * index_mlu_int32 = NULL;
+    // cnrtMalloc(&index_mlu_int32, index_size*sizeof(int));
+    // cnrtMemcpy(index_mlu_int32,index_int, index_size *sizeof(int), CNRT_MEM_TRANS_DIR_HOST2DEV);
+    // free(tempindex); free(index_int);
+
+        // cnmlBaseOp_t cast_op = NULL;
+    // cnmlTensor_t cast_input = NULL;
+    // cnmlCreateTensor_V2(&cast_input, CNML_TENSOR);
+    // cnmlSetTensorShape_V2(cast_input, 4, index_shape, NULL);
+    // cnmlSetTensorDataType(cast_input, CNML_DATA_FLOAT16);
+
+    // cnmlTensor_t cast_output = NULL;
+    // cnmlCreateTensor_V2(&cast_output, CNML_TENSOR);
+    // cnmlSetTensorShape_V2(cast_output, 4, index_shape, NULL);
+    // cnmlSetTensorDataType(cast_output, CNML_DATA_INT32);
+
+    // cnmlCreateCastOp(&cast_op, CNML_CAST_FLOAT16_TO_INT32_ROUND_ZERO, cast_input, cast_output);
+    // cnmlCompileBaseOp_V2(cast_op);
+    // void * cast_input_mlu = outputMluPtrS[1];
+    // void * cast_output_mlu = NULL;
+    // cnrtMalloc(&cast_output_mlu, shape_index[1]*shape_index[2]*shape_index[3]*shape_index[4]*sizeof(int));
+    // cnmlComputeCastOpForward_V4(cast_op, NULL, cast_input_mlu, NULL, cast_output_mlu, cnrt_queue, NULL);
+    //  if (cnrtSyncQueue(cnrt_queue) == CNRT_RET_SUCCESS) {
+    //   // get start_event and end_event elapsed time
+    //   cnrtNotifierDuration(notifierBeginning, notifierEnd, &event_time_use);
+    //   LOG(INFO) << "cfnet1 Cast hardware time: " << event_time_use;
+    // } else {
+    //   LOG(INFO) << " SyncQueue Error ";
+    // }
+
+    // cnmlTensor_t input_tensor = NULL;
+    // cnmlCreateTensor_V2(&input_tensor, CNML_TENSOR);    
+    // cnmlSetTensorShape_V2(input_tensor, 4, input_shape,NULL);
+    // cnmlSetTensorDataType(input_tensor, CNML_DATA_FLOAT16); 
+
+    // cnmlTensor_t index_tensor = NULL;
+    // cnmlCreateTensor_V2(&index_tensor, CNML_TENSOR);
+    // cnmlSetTensorShape_V2(index_tensor, 4, index_shape,NULL);
+    // cnmlSetTensorDataType(index_tensor, CNML_DATA_INT32); // pytorch里面为float16, 需要转INT32
+
+    // cnmlTensor_t output_tensor = NULL;
+    // cnmlCreateTensor_V2(&output_tensor, CNML_TENSOR);
+    // cnmlSetTensorShape_V2(output_tensor, 4, index_shape, NULL); // output的tensor和index的tensor的shape一样
+    // cnmlSetTensorDataType(output_tensor, CNML_DATA_FLOAT16); 
+    //     // right_feature_map = output[3], dim = CNML_DIM_W, index = output[1];
+    // cnmlDimension_t dim = CNML_DIM_C; // mlu默认NHWC, pytorch默认NCHW ,所以数据中W维是CNML中的C
+    // cnmlBaseOp_t gather_op = NULL;
+
+    // cnmlCreateGatherV2Op(&gather_op, input_tensor, index_tensor, output_tensor, dim);
+
+    // cnmlCompileBaseOp_V2(gather_op);
+
+    // void * output_mlu_ptr = NULL;
+    // cnrtMalloc(&output_mlu_ptr, shape_index[1]*shape_index[2]*shape_index[3]*shape_index[4]*sizeof(float)/2);
+    // LOG(INFO)<<"Before compute gather1";
+    // cnmlComputeGatherV2OpForward_V4(gather_op, NULL, outputMluPtrS[3], NULL, cast_output_mlu, NULL, \
+    // output_mlu_ptr, cnrt_queue, NULL);
+    // LOG(INFO)<<"After compute gather1, before cnrtSyncQueue";
+    // if (cnrtSyncQueue(cnrt_queue) == CNRT_RET_SUCCESS) {
+    //   // get start_event and end_event elapsed time
+    //   cnrtNotifierDuration(notifierBeginning, notifierEnd, &event_time_use);
+    //   LOG(INFO) << "cfnet1 gather 1 hardware time: " << event_time_use;
+    // } else {
+    //   LOG(INFO) << " SyncQueue Error ";
+    // }
+
+        // //warped_right_feature_map 
+    // inputMluPtrS2[0] = gather_output_mlu1;
+    // //warped_right_feature_map_left
+    // inputMluPtrS2[1] = outputMluPtrS[0];
+    // //left_feature_map
+    // inputMluPtrS2[2] = outputMluPtrS[2];
+    // //warped_right_feature_map2
+    // inputMluPtrS2[3] = gather_output_mlu2;
+    // //warped_right_feature_map_left2
+    // inputMluPtrS2[4] = outputMluPtrS[4];
+    // //left_feature_map2 
+    // inputMluPtrS2[5] = outputMluPtrS[6];
+    // //disparity_samples_s3
+    // inputMluPtrS2[6] = outputMluPtrS[8];
+    // //feature_sparse['s3']
+    // inputMluPtrS2[7] = outputMluPtrS[9];
+    // //sparse_out["sparse3"]
+    // inputMluPtrS2[8] = outputMluPtrS[10];
+    // //sparse_mask_out["sparse_mask3"]
+    // inputMluPtrS2[9] = outputMluPtrS[11];
+    // //features_left["concat_feature2"]
+    // inputMluPtrS2[10] = outputMluPtrS[12];
+    // //features_right["concat_feature2"
+    // inputMluPtrS2[11] = outputMluPtrS[13];
+    // //features_left["gw2"]
+    // inputMluPtrS2[12] = outputMluPtrS[14];
+    // //features_right["gw2"]
+    // inputMluPtrS2[13] = outputMluPtrS[15];
+    // // left_y_coordinate
+    // cnrtMalloc(&inputMluPtrS2[14], inputSizeS2[14]);
+    //    // 输出输入的大小
+
+          // cfnet1:  
+  // 0-4: warped_right_feature_map_left, gather_index, left_feature_map, right_feature_map, warped_right_feature_map_left2, 
+  // 5-9: gather_index2, left_feature_map2, right_feature_map2, disparity_samples_s3, feature_sparse['s3'], 
+  // 10-14: sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], features_left["concat_feature2"], features_right["concat_feature2"], features_left["gw2"], 
+  // 15-19: features_right["gw2"],feature_sparse['s2'], sparse_out["sparse2"], sparse_mask_out["sparse_mask2"]
+
+  /*
+  cfnet2:
+    0-4: warped_right_feature_map, warped_right_feature_map_left, left_feature_map,  warped_right_feature_map2, warped_right_feature_map_left2, 
+    5-9: left_feature_map2, disparity_samples_s3, feature_sparse['s3'], sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], \
+    10-14: features_left["concat_feature2"], features_right["concat_feature2"], features_left["gw2"], features_right["gw2"], left_y_coordinate 
+    gather 1:
+    #warped_right_feature_map = torch.gather(right_feature_map.float(), dim=4, index=gather_index)
+
+    gather 2:
+    #warped_right_feature_map2 = torch.gather(right_feature_map2.float(), dim=4, index=gather_index2)
+  */
+
+        // cfnet1:  
+  // 0-4: warped_right_feature_map_left, gather_index, left_feature_map, right_feature_map, warped_right_feature_map_left2, 
+  // 5-9: gather_index2, left_feature_map2, right_feature_map2, disparity_samples_s3, feature_sparse['s3'], 
+  // 10-14: sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], features_left["concat_feature2"], features_right["concat_feature2"], features_left["gw2"], 
+  // 15-19: features_right["gw2"],feature_sparse['s2'], sparse_out["sparse2"], sparse_mask_out["sparse_mask2"]
+
+  /*
+  cfnet2:
+    0-4: warped_right_feature_map, warped_right_feature_map_left, left_feature_map,  warped_right_feature_map2, warped_right_feature_map_left2, 
+    5-9: left_feature_map2, disparity_samples_s3, feature_sparse['s3'], sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], \
+    10-14: features_left["concat_feature2"], features_right["concat_feature2"], features_left["gw2"], features_right["gw2"], left_y_coordinate 
+    gather 1:
+    #warped_right_feature_map = torch.gather(right_feature_map.float(), dim=4, index=gather_index)
+
+    gather 2:
+    #warped_right_feature_map2 = torch.gather(right_feature_map2.float(), dim=4, index=gather_index2)
+  */

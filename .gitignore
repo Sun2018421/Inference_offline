@@ -1,0 +1,7 @@
+#忽略模型文件
+*.cambricon
+*.cambricon_twins
+OUTPUT*
+build/
+
+
