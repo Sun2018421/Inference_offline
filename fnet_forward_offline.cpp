@@ -15,32 +15,13 @@ DEFINE_int32(input_data_count, -1, "the input file count,default: -1, get rand  
 DEFINE_string(input1, " ", "the input file name of the offline model");
 DEFINE_string(input2, " ", "the input file name of the offline model");
 DEFINE_string(input3, " ", "the input file name of the offline model");
-void rand1(float* data, int length) {
-  unsigned int seed = 1024;
-  for (int i = 0; i < length; ++i) {
-    if (i % 5 == 4) {
-      data[i] = rand_r(&seed) % 100 / 100. + 0.0625;
-    } else if (i % 5 >= 2) {
-      data[i] = data[i - 2] + (rand_r(&seed) % 100) / 100.0 + 0.0625;
-    } else {
-      data[i] = (rand_r(&seed) % 100) / 100. + 0.0625;
-    }
+
+void linspace(float start, float stop, int num,float * data){
+  float step = (stop - start)/(num - 1);
+  for (int i = 0 ; i < num ; ++i){
+    data[i] = start + step * i ;
   }
 }
-
-void rand2(float* data, int length) {
-  unsigned int seed = 1024;
-  for (int i = 0; i < length; ++i) {
-    if (i % 5 == 0) {
-      data[i] = rand_r(&seed) % 100 / 100. + 0.0625;
-    } else if (i % 5 > 2) {
-      data[i] = data[i - 2] + (rand_r(&seed) % 100) / 100.0 + 0.0625;
-    } else {
-      data[i] = (rand_r(&seed) % 100) / 100. + 0.0625;
-    }
-  }
-}
-
 void readData(float* data, int length, std::string filename) {
     std::ifstream file;
     file.open(filename);
@@ -55,8 +36,8 @@ void readData(float* data, int length, std::string filename) {
 }
 
 void * gather_mlu(void * & input_tensor, int * input_shape, void * &index_tensor, int * index_shape , cnmlDimension_t dim, cnrtQueue_t &cnrt_queue){
-    LOG(INFO)<<" input_shape "<<input_shape[0]<<" "<<input_shape[1]<<" "<<input_shape[2]<<" "<<input_shape[3];
-    LOG(INFO)<<" index_shape "<<index_shape[0]<<" "<<index_shape[1]<<" "<<index_shape[2]<<" "<<index_shape[3];
+    // LOG(INFO)<<" input_shape "<<input_shape[0]<<" "<<input_shape[1]<<" "<<input_shape[2]<<" "<<input_shape[3];
+    // LOG(INFO)<<" index_shape "<<index_shape[0]<<" "<<index_shape[1]<<" "<<index_shape[2]<<" "<<index_shape[3];
     cnmlBaseOp_t cast_op = NULL;
     cnmlTensor_t cast_input = NULL;
     cnmlCreateTensor_V2(&cast_input, CNML_TENSOR);
@@ -74,15 +55,15 @@ void * gather_mlu(void * & input_tensor, int * input_shape, void * &index_tensor
     void * cast_output_mlu = NULL;
     cnrtRet_t res = cnrtMalloc(&cast_output_mlu, index_shape[0]*index_shape[1]*index_shape[2]*index_shape[3]*sizeof(int));
     assert(res == CNRT_RET_SUCCESS);
-    LOG(INFO)<<"start Cast";
+    // LOG(INFO)<<"start Cast";
     cnmlStatus_t cast_ret =  cnmlComputeCastOpForward_V4(cast_op, NULL, cast_input_mlu_ptr, NULL, cast_output_mlu, cnrt_queue, NULL);
     if(cast_ret != CNML_STATUS_SUCCESS){
       LOG(FATAL)<<"Cast Failed and ret is" <<cast_ret ;
     }
-    LOG(INFO)<<"Starting cnrtSyncQueue";
+    // LOG(INFO)<<"Starting cnrtSyncQueue";
     // cnrtQueryQueue(cnrt_queue);
     if (cnrtSyncQueue(cnrt_queue) == CNRT_RET_SUCCESS) {
-      LOG(INFO) << "Cast Done!";
+      // LOG(INFO) << "Cast Done!";
     } else {
       LOG(FATAL) << "SyncQueue Error ";
     }
@@ -110,13 +91,13 @@ void * gather_mlu(void * & input_tensor, int * input_shape, void * &index_tensor
     void * gather_output_mlu_ptr  = NULL;
     res = cnrtMalloc(&gather_output_mlu_ptr, index_shape[0]*index_shape[1]*index_shape[2]*index_shape[3]*sizeof(float)); // /2去掉了，是不是开小了？
     assert(res == CNRT_RET_SUCCESS);
-    LOG(INFO)<<"start gather"<<" "<<"shape is "<<index_shape[0]<<" "<<index_shape[1]<<" "<<index_shape[2]<<" "<<index_shape[3];
+    // LOG(INFO)<<"start gather"<<" "<<"shape is "<<index_shape[0]<<" "<<index_shape[1]<<" "<<index_shape[2]<<" "<<index_shape[3];
     cnmlStatus_t compute_ret = cnmlComputeGatherV2OpForward_V4(gather_op, NULL, input_tensor, NULL, cast_output_mlu, NULL, gather_output_mlu_ptr, cnrt_queue, NULL);
     if(compute_ret != CNML_STATUS_SUCCESS){
       LOG(FATAL)<<"CompuateGatherV2 Failed and ret is" <<compute_ret ;
     }
     if (cnrtSyncQueue(cnrt_queue) == CNRT_RET_SUCCESS) {
-      LOG(INFO) << "Gather Done!" ;
+      // LOG(INFO) << "Gather Done!" ;
     } else {
       LOG(FATAL) << "SyncQueue Error ";
     }
@@ -147,16 +128,14 @@ int main(int argc, char* argv[]) {
   }
   cnrtDev_t dev;
   int Dev_use = 0;
-  cnrtGetDeviceHandle(&dev, Dev_use); // use first dev
+  cnrtGetDeviceHandle(&dev, Dev_use); 
   cnrtSetCurrentDevice(dev);
-  // 2. load model and get function
   cnrtModel_t model;
-  // 2.1 load cfnet1 model file
   std::string fname = (std::string)"cfnet1.cambricon";
-  LOG(INFO) << "load file: " << fname;
+  // LOG(INFO) << "load file: " << fname;
   int size;
   cnrtGetModelSize(fname.c_str(), &size);
-  LOG(INFO) << "model size: " << size;
+  // LOG(INFO) << "model size: " << size;
   cnrtLoadModel(&model, fname.c_str());
   cnrtFunction_t function;
   cnrtRuntimeContext_t rt_ctx_;
@@ -189,11 +168,22 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < inputNum; i++) {
     int ip = inputSizeS[i] / cnrtDataTypeSize(input_data_type[i]); 
     auto databuf = reinterpret_cast<float*>(malloc(sizeof(float) * ip)); 
-    if (i == 0) {
-      rand1(databuf, ip);
-        } 
-    else  {
-        rand2(databuf, ip);
+    switch(i){
+      case 1:
+        readData(databuf,ip,"../data/imgl_data.txt");
+      break;
+      case 4:
+        readData(databuf,ip,"../data/imgl_data.txt");
+      break;
+      case 3:
+        readData(databuf,ip,"../data/disp_sparse_data.txt");
+      break;
+      case 2:
+        readData(databuf,ip,"../data/sparse_mask_data.txt");
+      break;
+      case 0:
+        linspace(0.0,255,256,databuf);
+      break;
     }
     in_count.push_back(ip);
     inputCpuPtrS[i] = reinterpret_cast<void*>(databuf);  // NCHW
@@ -236,7 +226,7 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < outputNum; i++) {
     param[inputNum + i] = outputMluPtrS[i];
   }
-  
+
   cnrtQueue_t cnrt_queue;
   cnrtCreateQueue(&cnrt_queue);
   cnrtSetRuntimeContextDeviceId(rt_ctx_, Dev_use);
@@ -293,7 +283,7 @@ int main(int argc, char* argv[]) {
   if (cnrtSyncQueue(cnrt_queue) == CNRT_RET_SUCCESS) {
     // get start_event and end_event elapsed time
     cnrtNotifierDuration(notifierBeginning, notifierEnd, &event_time_use);
-    LOG(INFO) << " hardware time: " << event_time_use;
+    // LOG(INFO) << " hardware time: " << event_time_use;
   } else {
     LOG(INFO) << " SyncQueue Error ";
   }
@@ -306,6 +296,57 @@ int main(int argc, char* argv[]) {
   cnrtDestroyNotifier(&notifierEnd);
   free(inputCpuPtrS);
   
+  gettimeofday(&tpend,NULL);
+  float execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
+    tpend.tv_usec - tpstart.tv_usec;
+  LOG(INFO) << " cfnet1 time: " << execTime << " us";
+
+/* 将模型输出保存出来，未改变数据布局，还是NCHW
+*/
+
+  std::string output_path = "../output/";
+  // void ** outputCpuPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
+  // void * temp_output_cpu_data = nullptr;
+  // for(int i = 0; i < outputNum ; i++){
+  //   temp_output_cpu_data = (void*)malloc(outputSizeS[i]);
+  //   cnrtMemcpy(temp_output_cpu_data,
+  //             outputMluPtrS[i],
+  //             outputSizeS[i],
+  //             CNRT_MEM_TRANS_DIR_DEV2HOST);
+  //   LOG(INFO)<<"copy done.";
+  //   int output_count = outputSizeS[i] / cnrtDataTypeSize(output_data_type[i]);
+  //   outputCpuPtrS[i] = reinterpret_cast<void*>(reinterpret_cast<float*>(malloc(sizeof(float) * output_count)));
+  //   if (output_data_type[i] != CNRT_FLOAT32) {
+  //     cnrtCastDataType(temp_output_cpu_data,
+  //                       output_data_type[i],
+  //                       outputCpuPtrS[i],
+  //                       CNRT_FLOAT32,
+  //                       output_count,
+  //                       nullptr);
+  //   } else {
+  //     memcpy(outputCpuPtrS[i], temp_output_cpu_data, outputSizeS[i]);
+  //   }
+  //   LOG(INFO)<< "cast done.";
+  //   std::stringstream ss;
+  //   ss << output_path << fname << "_output_" << i;
+  //   std::string output_name = ss.str();
+  //   LOG(INFO)<<"writing output to "<<output_name;
+  //   std::ofstream fout(output_name, std::ios::out);
+  //   fout << std::flush;
+  //   for(int j = 0 ; j < output_count; j++){
+  //     fout << ((float*)outputCpuPtrS[i])[j] << std::endl;
+  //   }
+  //   fout<<std::flush;
+  //   fout.close();
+  //   free(outputCpuPtrS[i]);
+  //   free(temp_output_cpu_data);
+  //   temp_output_cpu_data = nullptr;
+  // }
+  // free(outputCpuPtrS);
+
+
+  gettimeofday(&tpstart,NULL);
+
   // for gather1: 因为dim=4, 去掉第一维并不影响数据排放 dim=3 -> NCHW
   std::vector<int> shape_input(5,1); int dimNum = 5;
   cnrtGetOutputDataShape((int **)&shape_input, &dimNum, 3, function);
@@ -315,6 +356,40 @@ int main(int argc, char* argv[]) {
   cnrtGetOutputDataShape((int **)&shape_index, &dimNum_index, 1, function);
   int index_shape[] = {shape_index[1], shape_index[2], shape_index[3], shape_index[4]};
   void* gather_output_mlu1 = gather_mlu(outputMluPtrS[3], input_shape, outputMluPtrS[1],index_shape,CNML_DIM_C,cnrt_queue);
+
+  int output_size = cnrtDataTypeSize(output_data_type[3]) * index_shape[0] * index_shape[1] * index_shape[2] * index_shape[3];
+  void * temp_output_gather_cpu_data = (void *)malloc(output_size);
+  cnrtMemcpy(temp_output_gather_cpu_data, 
+    gather_output_mlu1, 
+    output_size,
+    CNRT_MEM_TRANS_DIR_DEV2HOST);
+
+  // int output_gather_count = output_size / cnrtDataTypeSize(output_data_type[3]);
+  // void * output_gather_cpu_data = (void *)malloc(sizeof(float) * output_gather_count);
+  // if (output_data_type[3] != CNRT_FLOAT32) {
+  //   cnrtCastDataType(temp_output_gather_cpu_data,
+  //                     output_data_type[3],
+  //                     output_gather_cpu_data,
+  //                     CNRT_FLOAT32,
+  //                     output_gather_count,
+  //                     nullptr);
+  // } else {
+  //   memcpy(output_gather_cpu_data, temp_output_gather_cpu_data, output_size);
+  // }
+  // std::stringstream ss;
+  // ss << output_path << fname << "gather_output" ;
+  // std::string output_name = ss.str();
+  // LOG(INFO)<<"writing output to "<<output_name;
+  // std::ofstream fout(output_name, std::ios::out);
+  // fout << std::flush;
+  // for(int j = 0 ; j < output_gather_count; j++){
+  //   fout << ((float*)output_gather_cpu_data)[j] << std::endl;
+  // }
+  // fout<<std::flush;
+  // fout.close();
+  // free(output_gather_cpu_data);
+  // free(temp_output_gather_cpu_data);
+  // temp_output_gather_cpu_data = nullptr;
 
   cnrtGetOutputDataShape((int **)&shape_input, &dimNum, 7, function);
   input_shape[0] = shape_input[1]; input_shape[1] = shape_input[2]; input_shape[2] = shape_input[3]; input_shape[3] = shape_input[4];
@@ -326,20 +401,26 @@ int main(int argc, char* argv[]) {
   cnrtUnloadModel(model);
   cnrtDestroyFunction(function);
 
-  // 判断是不是memory的问题
-  for(int i = 0 ; i< outputNum ; i++){
-    cnrtFree(outputMluPtrS[i]);
-  }
+  // // 判断是不是memory的问题
+  // for(int i = 0 ; i< outputNum ; i++){
+  //   cnrtFree(outputMluPtrS[i]);
+  // }
 
+  gettimeofday(&tpend,NULL);
+  execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
+    tpend.tv_usec - tpstart.tv_usec;
+  LOG(INFO) << " cfnet1_gather time: " << execTime << " us";
+
+  gettimeofday(&tpstart,NULL);
 
   cnrtModel_t model2;
   cnrtRuntimeContext_t ctx2;
   cnrtQueue_t queue2;
   std::string fname2 = (std::string)"cfnet2.cambricon";
-  LOG(INFO) << "load file: " << fname2;
+  // LOG(INFO) << "load file: " << fname2;
   int size2;
   cnrtGetModelSize(fname2.c_str(), &size2);
-  LOG(INFO) << "model size: " << size2;
+  // LOG(INFO) << "model size: " << size2;
   assert(cnrtLoadModel(&model2, fname2.c_str())==CNRT_RET_SUCCESS);
   cnrtFunction_t function2;
   std::string name2 = (std::string)"subnet0";
@@ -367,14 +448,70 @@ int main(int argc, char* argv[]) {
   cnrtDataType_t * output_data_type2 = nullptr;
   cnrtGetInputDataType(&input_data_type2, &inputNum2, function2);
   cnrtGetOutputDataType(&output_data_type2, &outputNum2, function2);
-  LOG(INFO)<<"inputNum2 "<<inputNum2<<" outputNum2 "<<outputNum2;
+  // LOG(INFO)<<"inputNum2 "<<inputNum2<<" outputNum2 "<<outputNum2;
   void ** param2 = reinterpret_cast<void**>(malloc(sizeof(void*) * (inputNum2 + outputNum2)));
   // 分配输出的MLU空间
   void ** inputMluPtrS2 = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum2));
   void ** outputMluPtrS2 = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum2));
+  // for(int i = 0 ; i< inputNum2 ; i++){
+  //   assert(cnrtMalloc(&inputMluPtrS2[i], inputSizeS2[i])==CNRT_RET_SUCCESS);
+  // }
+
+  cnrtFree(outputMluPtrS[3]);
+  cnrtFree(outputMluPtrS[5]);
+  cnrtFree(outputMluPtrS[7]);
+  cnrtFree(outputMluPtrS[1]);
+
   for(int i = 0 ; i< inputNum2 ; i++){
-    assert(cnrtMalloc(&inputMluPtrS2[i], inputSizeS2[i])==CNRT_RET_SUCCESS);
+    switch(i){
+      case 0:
+        inputMluPtrS2[14] = gather_output_mlu1;
+      break;
+      case 1:
+        inputMluPtrS2[13] = outputMluPtrS[0];
+      break;
+      case 2:
+        inputMluPtrS2[10] = outputMluPtrS[2];
+      break;
+      case 3:
+        inputMluPtrS2[12] = gather_output_mlu2;
+      break;
+      case 4:
+        inputMluPtrS2[11] = outputMluPtrS[4];
+      break;
+      case 5:
+        inputMluPtrS2[9] = outputMluPtrS[6];
+        break;
+      case 6:
+        inputMluPtrS2[8] =outputMluPtrS[8] ;
+        break;
+      case 7:
+        inputMluPtrS2[7] = outputMluPtrS[9] ;
+        break;
+      case 8:
+        inputMluPtrS2[5] = outputMluPtrS[10] ;
+        break;
+      case 9:
+        inputMluPtrS2[6] = outputMluPtrS[11];
+        break;
+      case 10:
+        inputMluPtrS2[4] = outputMluPtrS[12];
+        break;
+      case 11:
+        inputMluPtrS2[3] = outputMluPtrS[13];
+        break;
+      case 12:
+        inputMluPtrS2[1] = outputMluPtrS[14];
+        break;
+      case 13:
+        inputMluPtrS2[0] = outputMluPtrS[15];
+        break;
+      case 14:
+        cnrtMalloc(&inputMluPtrS2[2], inputSizeS2[2]);
+        break;
+    }
   }
+
   for(int i = 0; i < outputNum2; i++){
     assert(cnrtMalloc(&outputMluPtrS2[i], outputSizeS2[i])==CNRT_RET_SUCCESS);
   }
@@ -386,11 +523,8 @@ int main(int argc, char* argv[]) {
   }
 
   float event_time_use2;
-  LOG(INFO)<<"start cfnet2";
   CNRT_CHECK(cnrtInvokeRuntimeContext(ctx2, param2, queue2, nullptr));
-  LOG(INFO)<<"end cfnet2";
   if (cnrtSyncQueue(queue2) == CNRT_RET_SUCCESS) {
-    LOG(INFO) << "cfnet2 Done!" ;
   } else {
     LOG(INFO) << " SyncQueue Error ";
   }
@@ -398,6 +532,14 @@ int main(int argc, char* argv[]) {
   for (int i = 0 ; i< inputNum2 ; i++){
     cnrtFree(inputMluPtrS2[i]);
   }
+
+
+  gettimeofday(&tpend,NULL);
+  execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
+    tpend.tv_usec - tpstart.tv_usec;
+  LOG(INFO) << " cfnet2 time: " << execTime << " us";
+
+  gettimeofday(&tpstart,NULL);
 
   // gather
   std::vector<int> shape_input2(5,1); int dimNum2 = 5;
@@ -423,17 +565,29 @@ int main(int argc, char* argv[]) {
   cnrtDestroyQueue(cnrt_queue);
   cnrtDestroyQueue(queue2);
 
-  for (int i = 0 ; i < outputNum2; i++)
-      cnrtFree(outputMluPtrS2[i]);
+  cnrtFree(outputMluPtrS2[3]);
+  cnrtFree(outputMluPtrS2[5]);
+  cnrtFree(outputMluPtrS2[7]);
+  cnrtFree(outputMluPtrS2[1]);
+
+  // for (int i = 0 ; i < outputNum2; i++)
+  //     cnrtFree(outputMluPtrS2[i]);
     
+  gettimeofday(&tpend,NULL);
+  execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
+    tpend.tv_usec - tpstart.tv_usec;
+  LOG(INFO) << " cfnet2_gather time: " << execTime << " us";
+
+  gettimeofday(&tpstart,NULL);
+
   cnrtModel_t model3;
   cnrtRuntimeContext_t ctx3;
   cnrtQueue_t queue3 ;
   std::string fname3= (std::string)"cfnet3.cambricon";
-  LOG(INFO)<<"load file: "<<fname3;
+  // LOG(INFO)<<"load file: "<<fname3;
   int size3;
   cnrtGetModelSize(fname3.c_str(),&size3);
-  LOG(INFO)<<"model size"<<size3;
+  // LOG(INFO)<<"model size"<<size3;
   assert(cnrtLoadModel(&model3,fname3.c_str())==CNRT_RET_SUCCESS);
   cnrtFunction_t function3;
   std::string name3 = (std::string)"subnet0";
@@ -458,14 +612,50 @@ int main(int argc, char* argv[]) {
   cnrtDataType_t * output_data_type3 = nullptr;
   cnrtGetInputDataType(&input_data_type3, &inputNum3, function3);
   cnrtGetOutputDataType(&output_data_type3, &outputNum3, function3);
-  LOG(INFO)<<"inputNum3 "<<inputNum3<<" outputNum3 "<<outputNum3;
+  // LOG(INFO)<<"inputNum3 "<<inputNum3<<" outputNum3 "<<outputNum3;
   void ** param3 = reinterpret_cast<void**>(malloc(sizeof(void*) * (inputNum3 + outputNum3)));
   // 分配输出的MLU空间
   void ** inputMluPtrS3 = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum3));
   void ** outputMluPtrS3 = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum3));
-  for(int i = 0 ; i< inputNum3 ; i++){
-    assert(cnrtMalloc(&inputMluPtrS3[i], inputSizeS3[i])==CNRT_RET_SUCCESS);
+  // for(int i = 0 ; i< inputNum3 ; i++){
+  //   assert(cnrtMalloc(&inputMluPtrS3[i], inputSizeS3[i])==CNRT_RET_SUCCESS);
+  // }
+
+  for(int i = 0 ; i<  inputNum3; i++){
+    switch(i){
+      case 0 :
+        inputMluPtrS3[9] = gather_output1_mlu_cfnet2;
+      break;
+      case 1 :
+        inputMluPtrS3[7] = gather_output2_mlu_cfnet2;
+      break;  
+      case 2 :
+        inputMluPtrS3[8] = outputMluPtrS2[0]; 
+      break;
+      case 3 :
+        inputMluPtrS3[5] = outputMluPtrS2[2];
+      break;
+      case 4 :
+        inputMluPtrS3[6] = outputMluPtrS2[4];
+      break;
+      case 5 :
+        inputMluPtrS3[4] = outputMluPtrS2[6];
+      break;
+      case 6 :
+        inputMluPtrS3[3] = outputMluPtrS2[8];
+      break;
+      case 7 :
+        inputMluPtrS3[2] = outputMluPtrS[16];
+      break;
+      case 8 :
+        inputMluPtrS3[0] = outputMluPtrS[17];
+      break;
+      case 9 :
+        inputMluPtrS3[1] = outputMluPtrS[18];
+      break;
+    }
   }
+
   for(int i = 0; i < outputNum3; i++){
     assert(cnrtMalloc(&outputMluPtrS3[i], outputSizeS3[i])==CNRT_RET_SUCCESS);
   }
@@ -477,11 +667,11 @@ int main(int argc, char* argv[]) {
   }
 
   float event_time_use3;
-  LOG(INFO)<<"start cfnet3";
+  // LOG(INFO)<<"start cfnet3";
   CNRT_CHECK(cnrtInvokeRuntimeContext(ctx3, param3, queue3, nullptr));
-  LOG(INFO)<<"end cfnet3";
+  // LOG(INFO)<<"end cfnet3";
   if (cnrtSyncQueue(queue3) == CNRT_RET_SUCCESS) {
-    LOG(INFO) << "cfnet3 Done!" ;
+    // LOG(INFO) << "cfnet3 Done!" ;
   } else {
     LOG(INFO) << " SyncQueue Error ";
   }
@@ -499,9 +689,9 @@ int main(int argc, char* argv[]) {
   }
 
   gettimeofday(&tpend, NULL);
-  float execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
+  execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
     tpend.tv_usec - tpstart.tv_usec;
-  LOG(INFO) << " execution time: " << execTime << " us";
+  LOG(INFO) << " cfnet3 time: " << execTime << " us";
   cnrtDestroy();
   return 0;
 }

@@ -6,9 +6,9 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 from submodule import *
 import math
+import sys
 import torch_mlu
 import torch_mlu.core.mlu_model as ct
-
 
 class sparse_convolution(nn.Module):
     '''
@@ -67,7 +67,6 @@ class sparse_convolution(nn.Module):
         #print(sparse_mask7.size())
         feature7 = self.conv2(sparse_mask7)
         mask7 = self.maxpool2(mask11)
-        #cpu上使用
         # mask7_norm = 1 / (F.conv2d(mask11, torch.ones(1,mask11.size()[1],7, 7, device = device), padding=3) + self.small_value)
         # mask7_norm = 1 / (F.conv2d(mask11, torch.ones(1,mask11.size()[1],7, 7), padding=3) + self.small_value)
 
@@ -81,8 +80,6 @@ class sparse_convolution(nn.Module):
         sparse_mask5 = feature7_norm * mask7
         feature5 = self.conv3(sparse_mask5)
         mask5 = self.maxpool3(mask7)
-
-        # cpu上使用
         # mask5_norm = 1 / (F.conv2d(mask7, torch.ones(1,mask7.size()[1],5, 5,device = device), padding=2)  + self.small_value)
         # mask5_norm = 1 / (F.conv2d(mask7, torch.ones(1,mask7.size()[1],5, 5), padding=2)  + self.small_value)
         # conv_layer = nn.Conv2d(in_channels=mask7.shape[1], out_channels=1, kernel_size=5, padding=2, stride=1, bias = False)
@@ -95,7 +92,6 @@ class sparse_convolution(nn.Module):
         sparse_mask3_1 = feature5_norm * mask5
         feature3_1 = self.conv4(sparse_mask3_1)
         mask3_1 = self.maxpool4(mask5)
-         # cpu上使用
         # mask3_1_norm = 1 / (F.conv2d(mask5, torch.ones(1,mask5.size()[1],3, 3,device = device), padding=1) + self.small_value)
         # conv_layer = nn.Conv2d(in_channels=mask5.shape[1], out_channels=1, kernel_size=3, padding=1, stride=1, bias = False)
         # with torch.no_grad():
@@ -576,9 +572,6 @@ class cfnet(nn.Module):
             :max_disparity: Upper bound of disaprity search range.
         """
         # have been modified, origin: max=self.maxdisp
-        assert input_max_disparity.shape == input_min_disparity.shape
-        # sample_count = sample_count * torch.ones(input_max_disparity.shape).to(ct.mlu_device())
-
         min_disparity = torch.clamp(input_min_disparity - torch.clamp((
                 - (input_max_disparity - sample_count) + input_min_disparity), min=0) / 2.0, min=0, max=self.maxdisp // (2**scale) - 1)
         max_disparity = torch.clamp(input_max_disparity + torch.clamp(
@@ -586,7 +579,7 @@ class cfnet(nn.Module):
 
         return min_disparity, max_disparity
 
-    def generate_disparity_samples(self, min_disparity, max_disparity, sample_count=12):
+    def generate_disparity_samples(self, min_disparity, max_disparity, sample_count=12, range_multiplier = None):
         """
         Description:    Generates "sample_count" number of disparity samples from the
                                                             search range (min_disparity, max_disparity)
@@ -600,11 +593,10 @@ class cfnet(nn.Module):
         Returns:
             :disparity_samples:
         """
-        disparity_samples = self.uniform_sampler(min_disparity, max_disparity, sample_count)
+        disparity_samples = self.uniform_sampler(min_disparity, max_disparity, sample_count, range_multiplier)
 
-        # disparity_samples = torch.cat((torch.floor(min_disparity), disparity_samples, torch.ceil(max_disparity)),
-        #                               dim=1).long()                   # disparity level = sample_count + 2
-        disparity_samples = torch.cat((torch.floor(min_disparity), disparity_samples, torch.round(max_disparity + 0.5)), dim=1)
+        disparity_samples = torch.cat((torch.floor(min_disparity), torch.floor(disparity_samples), torch.round(max_disparity + 0.5)),
+                                      dim=1)
         return disparity_samples
 
     def cost_volume_generator(self, left_input, right_input, disparity_samples, model = 'concat', num_groups = 40):
@@ -622,21 +614,21 @@ class cfnet(nn.Module):
             :disaprity_samples:
         """
 
-        right_feature_map, left_feature_map = self.spatial_transformer(left_input, right_input, disparity_samples)
+        right_feature_map, left_feature_map = self.spatial_transformer(left_input,
+                                                                       right_input, disparity_samples)
         disparity_samples = disparity_samples.unsqueeze(1)  # .float()
         if model == 'concat':
              cost_volume = torch.cat((left_feature_map, right_feature_map), dim=1)
         else:
              cost_volume = groupwise_correlation_4D(left_feature_map, right_feature_map, num_groups)
-        return cost_volume, disparity_samples
 
+        return cost_volume, disparity_samples
+    
     def sparse_downsample(self, sparse, sparse_mask):
         '''
-           try the downsample by sample the sparse result by fixed step
+           try the downsample by sample the sparse result by fixed step 
         '''
-
         sparse_out = {}
-        # print(sparse.cpu().shape, sparse_mask.cpu().shape)
 
         # [1, 1, 512, 1024]
 
@@ -653,18 +645,18 @@ class cfnet(nn.Module):
         sparse_mask_out["sparse_mask6"] = sparse_mask.reshape(-1,32)[:,0].reshape(16,-1)[:,:32].reshape(1, 1, 16,32)
         return sparse_out, sparse_mask_out
 
+
     def sparse_expand(self, sparse, sparse_mask, left_img):
         '''
             RGB guieded sparse expand
-            input:
-                sparse_mask: N*1*W*H  [1, 1, 512, 1024]
-                sparse:      N*1*W*H  [1, 1, 512, 1024]
+            input: 
+                sparse_mask: N*1*W*H
+                sparse:      N*1*W*H
                 left_img:    N*3*W*H
             output:
                 sparse_mask_exp: N*1*W*H
                 sparse_exp:      N*1*W*H
         '''
-        print("===================in_sparse_expand==============================")
         threshold = 10.0
         # 以下均为torch.Size([1, 3, 510, 1022])
         img_center = left_img[:,:,1:-1,1:-1]
@@ -676,92 +668,174 @@ class cfnet(nn.Module):
         img_down_left = left_img[:,:,0:-2,2:]
         img_down = left_img[:,:,1:-1,2:]
         img_down_right = left_img[:,:,2:,2:]
-        # mask_ones = torch.ones([1, 1, 510, 1022]).half().to(ct.mlu_device())
-        # mask_ones = torch.ones([1, 1, 510, 1022]).to(ct.mlu_device())
 
-
-        # print(torch.sum(torch.abs(img_up_left - img_center),1).cpu().shape, torch.sum(torch.abs(img_up_left - img_center),1).cpu())  # torch.Size([1, 510, 1022])
         mask_up_left = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_up_left - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,0:-2], 1.0, -1.0), 0.0, 0.0) \
+                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,0:-2], 1.0 - 0.1, -1.0), 0.0, 0.0) \
                                                     * sparse_mask[:,:,1:-1,1:-1]  # torch.Size([1, 1, 510, 1022])
-        new_mask_up_left = - (mask_up_left - 1)
-        sparse = torch.cat([torch.cat([sparse[:,:,0:-2,0:-2] *new_mask_up_left  + sparse[:,:,1:-1,1:-1] * mask_up_left, sparse[:,:,0:-2,1022:1024]], dim=3), sparse[:,:,510:,:]], dim=2)
-        # sparse[:,:,0:510,0:1022][mask_up_left] = sparse[:,:,1:511,1:1023][mask_up_left]
+        new_mask_up_left =  - (mask_up_left - 1)
+        sparse = torch.cat([torch.cat([sparse[:,:,0:-2,:-2] * new_mask_up_left + sparse[:,:,1:-1,1:-1] * mask_up_left, sparse[:,:,0:-2,1022:]], dim=3), sparse[:,:,510:,:]], dim=2)
         sparse_mask = torch.cat([torch.cat([sparse_mask[:,:,0:-2,0:-2] * new_mask_up_left + sparse_mask[:,:,1:-1,1:-1] * mask_up_left, sparse_mask[:,:,0:-2,1022:1024] * 1.0], dim=3), sparse_mask[:,:,510:,:] * 1.0], dim=2)
-        # sparse_mask[:,:,0:-2,0:-2][mask_up_left] = sparse_mask[:,:,1:-1,1:-1][mask_up_left]
 
         mask_up = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_up - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,1:-1,0:-2], 1.0, -1.0), 0.0, 0.0) \
+                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,1:-1,0:-2], 1.0 - 0.1, -1.0), 0.0, 0.0) \
                                                     * sparse_mask[:,:,1:-1,1:-1] # [1, 1, 510, 1022]
         new_mask_up = - (mask_up - 1)
         sparse = torch.cat([sparse[:,:,0:1,:], torch.cat([torch.cat([sparse[:,:,1:-1,0:-2] *new_mask_up  + sparse[:,:,1:-1,1:-1] * mask_up, sparse[:,:,1:-1,1022:]], dim=3), sparse[:,:,511:,:]], dim=2)], dim=2)
-        # sparse[:,:,1:-1,0:-2][mask_up] = sparse[:,:,1:-1,1:-1][mask_up]
         sparse_mask = torch.cat([sparse_mask[:,:,0:1,:], torch.cat([torch.cat([sparse_mask[:,:,1:-1,0:-2] *new_mask_up  + sparse_mask[:,:,1:-1,1:-1] * mask_up, sparse_mask[:,:,1:-1,1022:]], dim=3), sparse_mask[:,:,511:,:]], dim=2)], dim=2)
-        # sparse_mask[:,:,1:-1,0:-2][mask_up] = sparse_mask[:,:,1:-1,1:-1][mask_up]
 
         mask_up_right = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_up_right - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,2:,0:-2], 1.0, -1.0), 0.0, 0.0) \
+                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,2:,0:-2], 1.0 - 0.1, -1.0), 0.0, 0.0) \
                                                     * sparse_mask[:,:,1:-1,1:-1]  # [1, 1, 510, 1022]
         new_mask_up_right = - (mask_up_right - 1)
         sparse = torch.cat([sparse[:,:,0:2,:],torch.cat([sparse[:,:,2:,0:-2] * new_mask_up_right + sparse[:,:,1:-1,1:-1] * mask_up_right, sparse[:,:,2:,1022:]], dim=3)], dim=2)
-        # sparse[:,:,2:,0:-2][mask_up_right] = sparse[:,:,1:-1,1:-1][mask_up_right]
         sparse_mask = torch.cat([sparse_mask[:,:,0:2,:],torch.cat([sparse_mask[:,:,2:,0:-2] * new_mask_up_right + sparse_mask[:,:,1:-1,1:-1] * mask_up_right, sparse_mask[:,:,2:,1022:]], dim=3)], dim=2)
-        # sparse_mask[:,:,2:,0:-2][mask_up_right] = sparse_mask[:,:,1:-1,1:-1][mask_up_right]
 
         mask_left = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_left - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,1:-1], 1.0, -1.0), 0.0, 0.0) \
-                                                    * -sparse_mask[:,:,1:-1,1:-1]
+                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,1:-1], 1.0 - 0.1, -1.0), 0.0, 0.0) \
+                                                    * sparse_mask[:,:,1:-1,1:-1]
         new_mask_left = - (mask_left - 1)
         sparse = torch.cat([torch.cat([torch.cat([sparse[:,:,0:-2,0:1], sparse[:,:,0:-2,1:-1] * new_mask_left + sparse[:,:,1:-1,1:-1] * mask_left],dim=3), sparse[:,:,0:-2,1023:]],dim=3), sparse[:,:,510:,:]],dim=2)
-        # sparse[:,:,0:-2,1:-1][mask_left] = sparse[:,:,1:-1,1:-1][mask_left]
         sparse_mask = torch.cat([torch.cat([torch.cat([sparse_mask[:,:,0:-2,0:1], sparse_mask[:,:,0:-2,1:-1] * new_mask_left + sparse_mask[:,:,1:-1,1:-1] * mask_left],dim=3), sparse_mask[:,:,0:-2,1023:]],dim=3), sparse_mask[:,:,510:,:]],dim=2)
-        # sparse_mask[:,:,0:-2,1:-1][mask_left] = sparse_mask[:,:,1:-1,1:-1][mask_left]
 
         mask_right = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_right - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,2:,1:-1] ,1.0, -1.0), 0.0, 0.0) \
-                                                    * -sparse_mask[:,:,1:-1,1:-1]
+                                                    * torch.threshold(-torch.threshold(sparse_mask[:,:,2:,1:-1] ,1.0 - 0.1, -1.0), 0.0, 0.0) \
+                                                    * sparse_mask[:,:,1:-1,1:-1]
         new_mask_right = - (mask_right - 1)
         sparse = torch.cat([sparse[:,:,0:2,:], torch.cat([sparse[:,:,2:,0:1],torch.cat([sparse[:,:,2:,1:-1] * new_mask_right + sparse[:,:,1:-1,1:-1] * mask_right, sparse[:,:,2:,1023:]],dim=3)],dim=3)], dim=2)
-        # sparse[:,:,2:,1:-1][mask_right] = sparse[:,:,1:-1,1:-1][mask_right]
         sparse_mask = torch.cat([sparse[:,:,0:2,:], torch.cat([sparse_mask[:,:,2:,0:1],torch.cat([sparse_mask[:,:,2:,1:-1] * new_mask_right + sparse_mask[:,:,1:-1,1:-1] * mask_right, sparse_mask[:,:,2:,1023:]],dim=3)],dim=3)], dim=2)
-        # sparse_mask[:,:,2:,1:-1][mask_right] = sparse_mask[:,:,1:-1,1:-1][mask_right]
 
 
         mask_down_left = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_down_left - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                   * torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,2:], 1.0, -1.0), 0.0, 0.0) \
+                                                   * torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,2:], 1.0 - 0.1, -1.0), 0.0, 0.0) \
                                                    * sparse_mask[:,:,1:-1,1:-1]
         new_mask_down_left = - (mask_down_left - 1)
         sparse = torch.cat([torch.cat([sparse[:,:,0:-2,0:2],sparse[:,:,0:-2,2:] * new_mask_down_left + sparse[:,:,1:-1,1:-1] * mask_down_left],dim=3), sparse[:,:,510:,:]], dim=2)
-        # sparse[:,:,0:-2,2:][mask_down_left] = sparse[:,:,1:-1,1:-1][mask_down_left]
         sparse_mask = torch.cat([torch.cat([sparse_mask[:,:,0:-2,0:2],sparse_mask[:,:,0:-2,2:] * new_mask_down_left + sparse_mask[:,:,1:-1,1:-1] * mask_down_left],dim=3), sparse_mask[:,:,510:,:]], dim=2)
-        # sparse_mask[:,:,0:-2,2:][mask_down_left] = sparse_mask[:,:,1:-1,1:-1][mask_down_left]
-        # return sparse, sparse_mask
 
         mask_down = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_down - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                   * torch.threshold(-torch.threshold(sparse_mask[:,:,1:-1,2:], 1.0, -1.0), 0.0, 0.0) \
+                                                   * torch.threshold(-torch.threshold(sparse_mask[:,:,1:-1,2:], 1.0 - 0.1, -1.0), 0.0, 0.0) \
                                                    * sparse_mask[:,:,1:-1,1:-1]
         new_mask_down = - (mask_down - 1)
         sparse = torch.cat([sparse[:,:,0:1,:], torch.cat([torch.cat([sparse[:,:,1:-1,0:2],sparse[:,:,1:-1,2:] * new_mask_down + sparse[:,:,1:-1,1:-1] * mask_down], dim=3), sparse[:,:,511:,:]], dim=2)],dim=2)
-        # sparse[:,:,1:-1,2:][mask_down] = sparse[:,:,1:-1,1:-1][mask_down]
         sparse_mask = torch.cat([sparse_mask[:,:,0:1,:], torch.cat([torch.cat([sparse_mask[:,:,1:-1,0:2],sparse_mask[:,:,1:-1,2:] * new_mask_down + sparse_mask[:,:,1:-1,1:-1] * mask_down], dim=3), sparse_mask[:,:,511:,:]], dim=2)],dim=2)
-        # sparse_mask[:,:,1:-1,2:][mask_down] = sparse_mask[:,:,1:-1,1:-1][mask_down]
-        #return sparse, sparse_mask
 
         mask_down_right = torch.unsqueeze(torch.threshold(-torch.threshold(torch.sum(torch.abs(img_down_right - img_center), 1), threshold, -1.0), 0.0, 0.0), dim=1) \
-                                                  * torch.threshold(-torch.threshold(sparse_mask[:,:,2:,2:], 1.0, -1.0), 0.0, 0.0) \
-                                                  * torch.threshold(-torch.threshold(-sparse_mask[:,:,1:-1,1:-1], 0.0, -1.0), 0.0, 0.0)
+                                                  * torch.threshold(-torch.threshold(sparse_mask[:,:,2:,2:], 1.0 -0.1, -1.0), 0.0, 0.0) \
+                                                  * sparse_mask[:,:,1:-1,1:-1]
         new_mask_down_right = - (mask_down_right - 1)
         sparse = torch.cat([sparse[:,:,0:2,:], torch.cat([sparse[:,:,2:,0:2],sparse[:,:,2:,2:] * new_mask_down_right + sparse[:,:,1:-1,1:-1] * mask_down_right], dim=3)], dim=2)
-        # sparse[:,:,2:,2:][mask_down_right] = sparse[:,:,1:-1,1:-1][mask_down_right]
         sparse_mask = torch.cat([sparse_mask[:,:,0:2,:], torch.cat([sparse_mask[:,:,2:,0:2],sparse_mask[:,:,2:,2:] * new_mask_down_right + sparse_mask[:,:,1:-1,1:-1] * mask_down_right], dim=3)], dim=2)
-        # sparse_mask[:,:,2:,2:][mask_down_right] = sparse_mask[:,:,1:-1,1:-1][mask_down_right]
+
+        return sparse, sparse_mask
+
+    def sparse_expand_round(self, sparse, sparse_mask, left_img):
+        '''
+            RGB guieded sparse expand
+            input: 
+                sparse_mask: N*1*W*H
+                sparse:      N*1*W*H
+                left_img:    N*3*W*H
+            output:
+                sparse_mask_exp: N*1*W*H
+                sparse_exp:      N*1*W*H
+        '''
+        threshold = 0.1
+        img_center = left_img[:,:,1:-1,1:-1]
+        img_up_left = left_img[:,:,0:-2,0:-2]
+        img_up = left_img[:,:,1:-1,0:-2]
+        img_up_right = left_img[:,:,2:,0:-2]
+        img_left = left_img[:,:,0:-2,1:-1]
+        img_right = left_img[:,:,2:,1:-1]
+        img_down_left = left_img[:,:,0:-2,2:]
+        img_down = left_img[:,:,1:-1,2:]
+        img_down_right = left_img[:,:,2:,2:]
+        
+        mask_up_left = torch.unsqueeze(torch.sum(torch.abs(img_up_left - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,0:-2,0:-2] < 1) & (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_up = torch.unsqueeze(torch.sum(torch.abs(img_up - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,1:-1,0:-2] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_up_right = torch.unsqueeze(torch.sum(torch.abs(img_up_right - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,2:,0:-2] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_left = torch.unsqueeze(torch.sum(torch.abs(img_left - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,0:-2,1:-1] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_right = torch.unsqueeze(torch.sum(torch.abs(img_right - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,2:,1:-1] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_down_left = torch.unsqueeze(torch.sum(torch.abs(img_down_left - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,0:-2,2:] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_down = torch.unsqueeze(torch.sum(torch.abs(img_down - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,1:-1,2:] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_down_right = torch.unsqueeze(torch.sum(torch.abs(img_down_right - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,2:,2:] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        sparse[:,:,1:-1,2:][mask_down] = sparse[:,:,1:-1,1:-1][mask_down]
+        sparse_mask[:,:,1:-1,2:][mask_down] = sparse_mask[:,:,1:-1,1:-1][mask_down]
+
+        sparse[:,:,0:-2,2:][mask_down_left] = sparse[:,:,1:-1,1:-1][mask_down_left]
+        sparse_mask[:,:,0:-2,2:][mask_down_left] = sparse_mask[:,:,1:-1,1:-1][mask_down_left]
+
+        sparse[:,:,2:,1:-1][mask_right] = sparse[:,:,1:-1,1:-1][mask_right]
+        sparse_mask[:,:,2:,1:-1][mask_right] = sparse_mask[:,:,1:-1,1:-1][mask_right]
+
+        sparse[:,:,0:-2,1:-1][mask_left] = sparse[:,:,1:-1,1:-1][mask_left]
+        sparse_mask[:,:,0:-2,1:-1][mask_left] = sparse_mask[:,:,1:-1,1:-1][mask_left]
+
+        sparse[:,:,2:,0:-2][mask_up_right] = sparse[:,:,1:-1,1:-1][mask_up_right]
+        sparse_mask[:,:,2:,0:-2][mask_up_right] = sparse_mask[:,:,1:-1,1:-1][mask_up_right]
+
+        sparse[:,:,1:-1,0:-2][mask_up] = sparse[:,:,1:-1,1:-1][mask_up]
+        sparse_mask[:,:,1:-1,0:-2][mask_up] = sparse_mask[:,:,1:-1,1:-1][mask_up]
+
+        sparse[:,:,0:-2,0:-2][mask_up_left] = sparse[:,:,1:-1,1:-1][mask_up_left]
+        sparse_mask[:,:,0:-2,0:-2][mask_up_left] = sparse_mask[:,:,1:-1,1:-1][mask_up_left]
+
+        sparse[:,:,2:,2:][mask_down_right] = sparse[:,:,1:-1,1:-1][mask_down_right]
+        sparse_mask[:,:,2:,2:][mask_down_right] = sparse_mask[:,:,1:-1,1:-1][mask_down_right]
+	
+        mask_up_left = torch.unsqueeze(torch.sum(torch.abs(img_up_left - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,0:-2,0:-2] < 1) & (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_up = torch.unsqueeze(torch.sum(torch.abs(img_up - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,1:-1,0:-2] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_up_right = torch.unsqueeze(torch.sum(torch.abs(img_up_right - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,2:,0:-2] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_left = torch.unsqueeze(torch.sum(torch.abs(img_left - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,0:-2,1:-1] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_right = torch.unsqueeze(torch.sum(torch.abs(img_right - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,2:,1:-1] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_down_left = torch.unsqueeze(torch.sum(torch.abs(img_down_left - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,0:-2,2:] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_down = torch.unsqueeze(torch.sum(torch.abs(img_down - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,1:-1,2:] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        mask_down_right = torch.unsqueeze(torch.sum(torch.abs(img_down_right - img_center),1) < threshold, dim=1) & (sparse_mask[:,:,2:,2:] < 1)& (sparse_mask[:,:,1:-1,1:-1] > 0)
+        
+        sparse[:,:,1:-1,2:][mask_down] = sparse[:,:,1:-1,1:-1][mask_down]
+        sparse_mask[:,:,1:-1,2:][mask_down] = sparse_mask[:,:,1:-1,1:-1][mask_down]
+
+        sparse[:,:,0:-2,2:][mask_down_left] = sparse[:,:,1:-1,1:-1][mask_down_left]
+        sparse_mask[:,:,0:-2,2:][mask_down_left] = sparse_mask[:,:,1:-1,1:-1][mask_down_left]
+
+        sparse[:,:,2:,1:-1][mask_right] = sparse[:,:,1:-1,1:-1][mask_right]
+        sparse_mask[:,:,2:,1:-1][mask_right] = sparse_mask[:,:,1:-1,1:-1][mask_right]
+
+        sparse[:,:,0:-2,1:-1][mask_left] = sparse[:,:,1:-1,1:-1][mask_left]
+        sparse_mask[:,:,0:-2,1:-1][mask_left] = sparse_mask[:,:,1:-1,1:-1][mask_left]
+
+        sparse[:,:,2:,0:-2][mask_up_right] = sparse[:,:,1:-1,1:-1][mask_up_right]
+        sparse_mask[:,:,2:,0:-2][mask_up_right] = sparse_mask[:,:,1:-1,1:-1][mask_up_right]
+
+        sparse[:,:,1:-1,0:-2][mask_up] = sparse[:,:,1:-1,1:-1][mask_up]
+        sparse_mask[:,:,1:-1,0:-2][mask_up] = sparse_mask[:,:,1:-1,1:-1][mask_up]
+
+        sparse[:,:,0:-2,0:-2][mask_up_left] = sparse[:,:,1:-1,1:-1][mask_up_left]
+        sparse_mask[:,:,0:-2,0:-2][mask_up_left] = sparse_mask[:,:,1:-1,1:-1][mask_up_left]
+
+        sparse[:,:,2:,2:][mask_down_right] = sparse[:,:,1:-1,1:-1][mask_down_right]
+        sparse_mask[:,:,2:,2:][mask_down_right] = sparse_mask[:,:,1:-1,1:-1][mask_down_right]
 
         return sparse, sparse_mask
 
 
-    def cost_volum_modulation(self, sparse, sparse_mask, sampler, cost_volum, max_disp = None):
+    def cost_volum_modulation(self, sparse, sparse_mask, sampler, cost_volum, max_disp = None, sampler_gen = None):
         '''
-            input:
+            input: 
                 sparse_mask: N*1*W*H
                 sparse:      N*1*W*H
                 sampler:     N*D*W*H
@@ -776,6 +850,15 @@ class cfnet(nn.Module):
                             + sampler --> gaussian_modulation_element * cost_volum --> modulated_cost_volum
               sparse
         '''
+        # for test 
+        '''print('cf-net: sparse:', sparse.size())
+        
+        print('cf-net: sparse mask :', sparse_mask.size())
+        print('cf-net: sampler', sampler)
+        print('cf-net: cost volum', cost_volum.size())
+        print(sparse.type())
+        print(sparse_mask.type())
+        print(cost_volum.type())'''
         # superparameter k=10,c=1 is set by GSM
         k = 10
         c = 1
@@ -783,20 +866,21 @@ class cfnet(nn.Module):
         #sparse = torch.unsqueeze(sparse, dim=1)
         #sparse_mask = torch.unsqueeze(sparse_mask, dim=1)
         # calculate the modulation element
-        #ones_sparse_mask = torch.ones(sparse_mask.shape).half().to(ct.mlu_device())
-        #ones_sparse_mask = torch.ones(sparse_mask.shape).to(ct.mlu_device())
         if max_disp is None:
             gaussian_modulation_element = - (sparse_mask - 1) + sparse_mask*k*torch.exp(-torch.pow(sparse - sampler, 2)/(2*pow(c, 2)))
         else:
-            sampler_gen = torch.linspace(0, max_disp-1, max_disp).view(1, max_disp, 1, 1).half().to(ct.mlu_device()) * 1.0
-            # sampler_gen = torch.linspace(0, max_disp-1, max_disp).view(1, max_disp, 1, 1).to(ct.mlu_device()) * 1.0
+            # sampler_gen = torch.linspace(0, max_disp-1, max_disp).view(1, max_disp, 1, 1).half().to(ct.mlu_device()) * 1.0
+            sampler_gen = sampler_gen.view(1, max_disp, 1, 1)
             gaussian_modulation_element = - (sparse_mask - 1) + sparse_mask*k*torch.exp(-torch.pow(sparse - sampler_gen, 2)/(2*pow(c, 2)))
-
+            #print('sampler_gen: ', sampler_gen.size())
+        #print('gaussian_modulation_element: ', gaussian_modulation_element.size())
+        #print('cost_volum', cost_volum.size())
         gaussian_modulation_element = torch.unsqueeze(gaussian_modulation_element, dim = 1)
+        #print('gaussian_modulation_element2: ', gaussian_modulation_element.size())
         modulated_cost_volum = gaussian_modulation_element * cost_volum
 
         return modulated_cost_volum
-
+    
     def sparse_feature_extraction(self, sparse_out, sparse_mask_out):
         ''' extract sparse feature by sparse convolution '''
         feature_sparse = {}
@@ -808,17 +892,14 @@ class cfnet(nn.Module):
 
         return feature_sparse
 
-
     def spatial_pre(self, left_y_coordinate, left_input, right_input, disparity_samples, length):
-        # input: left_input  right_input disparity_samples
-        # output: warped_right_feature_map_left  gather_index  left_feature_map  right_feature_map
-        # length = right_input.cpu().size()[3]
-        left_feature_map = left_input.unsqueeze(0).repeat(disparity_samples.size()[1], 1, 1, 1, 1).permute([1, 2, 0, 3, 4])  # [1, 12, 16, 128,256]
-        right_feature_map = right_input.unsqueeze(0).repeat(disparity_samples.size()[1], 1, 1, 1, 1).permute([1, 2, 0, 3, 4]) # [1, 12, 128, 256]
         # left_y_coordinate = torch.linspace(0.0, left_input.size()[3]-1, left_input.size()[3]).half().to(ct.mlu_device())  # [256]  -> 0.1.2...255
         left_y_coordinate = left_y_coordinate.unsqueeze(0).repeat(left_input.size()[2], 1)  # [128, 256]
         left_y_coordinate = torch.clamp(left_y_coordinate, min=0, max=left_input.size()[3] - 1)  # [128, 256]
         left_y_coordinate = left_y_coordinate.unsqueeze(0).repeat(left_input.size()[0], 1, 1)  # [1, 128, 256]
+        right_feature_map = right_input.unsqueeze(0).repeat(disparity_samples.size()[1], 1, 1, 1, 1).permute([1, 2, 0, 3, 4]) # [1, 12, 128, 256]
+        left_feature_map = left_input.unsqueeze(0).repeat(disparity_samples.size()[1], 1, 1, 1, 1).permute([1, 2, 0, 3, 4])  # [1, 12, 16, 128,256]
+
         right_y_coordinate = left_y_coordinate.unsqueeze(0).repeat(disparity_samples.size()[1], 1, 1, 1).permute([1, 0, 2, 3]) - disparity_samples  # [1, 16, 128, 256] - [1, 16, 128, 256]
 
         right_y_coordinate_1 = right_y_coordinate
@@ -826,19 +907,14 @@ class cfnet(nn.Module):
         right_y_coordinate = torch.clamp(right_y_coordinate, min=0, max=right_input.size()[3] - 1)  # [1, 16, 128, 256]
         gather_index = right_y_coordinate.unsqueeze(0).repeat(right_input.size()[1], 1, 1, 1, 1).permute([1, 0, 2, 3, 4]) # [1, 12, 16, 128, 256]
 
-        # return right_y_coordinate_1, gather_index, left_feature_map, right_feature_map
 
-        # TODO
-        warped_right_feature_map_left =  - torch.threshold(-torch.threshold(right_y_coordinate_1, 0, -1.0), 0.0, 0.0) 
-        warped_right_feature_map_left2 = - torch.threshold(-torch.threshold(right_y_coordinate_1, length - 1, 0), -length + 1, 1)
+        right_y_coordinate_1 = right_y_coordinate_1.unsqueeze(1)
+        warped_right_feature_map_left =  - (torch.threshold(-torch.threshold(-right_y_coordinate_1, 0, -20), 0.0, 21) - 20)
+        # torch.threshold(-torch.threshold(sparse_mask[:,:,0:-2,0:-2], 1.0 - 0.1, -1.0), 0.0, 0.0)
+        # np.savetxt('result.txt', right_y_coordinate_1.cpu().numpy().reshape(-1, 1))
+        warped_right_feature_map_left2 = - (torch.threshold(-torch.threshold(right_y_coordinate_1, length - 1, -29), 0, 30) - 29)
         return warped_right_feature_map_left + warped_right_feature_map_left2 + 1, gather_index, left_feature_map, right_feature_map
         
-
-    def spatial_post(self, right_feature_map, gather_index, warped_right_feature_map_left):
-        # right_input  gather_index  warped_right_feature_map_left
-        warped_right_feature_map = torch.gather(right_feature_map, dim=4, index=gather_index)
-        warped_right_feature_map = warped_right_feature_map_left * warped_right_feature_map
-        return warped_right_feature_map
 
     def forward(self, *input):
         if(len(input) == 1):
@@ -849,29 +925,38 @@ class cfnet(nn.Module):
             return self.forward2(*input)
         elif(len(input) == 10):
             return self.forward3(*input)
+        else:
+            raise Exception()
 
     def forward1(self, *input):
         left, right, sparse, sparse_mask, left_y_coordinate = input
-        print('================start==================')
         features_left = self.feature_extraction(left)
         features_right = self.feature_extraction(right)
         # RGB guided sparse expanded
         sparse, sparse_mask = self.sparse_expand(sparse, sparse_mask, left)
-        print("====================sparse_expand=====================")
         sparse_out, sparse_mask_out = self.sparse_downsample(sparse, sparse_mask)
+        
         feature_sparse = self.sparse_feature_extraction(sparse_out, sparse_mask_out)
 
-        gwc_volume4 = build_gwc_volume(features_left["gw4"], features_right["gw4"], self.maxdisp // 8, self.num_groups)
-        gwc_volume5 = build_gwc_volume(features_left["gw5"], features_right["gw5"], self.maxdisp // 16, self.num_groups)
-        gwc_volume6 = build_gwc_volume(features_left["gw6"], features_right["gw6"], self.maxdisp // 32, self.num_groups)
+        gwc_volume4 = build_gwc_volume(features_left["gw4"], features_right["gw4"], self.maxdisp // 8,
+                                       self.num_groups)
+
+        gwc_volume5 = build_gwc_volume(features_left["gw5"], features_right["gw5"], self.maxdisp // 16,
+                                       self.num_groups)
+
+        gwc_volume6 = build_gwc_volume(features_left["gw6"], features_right["gw6"], self.maxdisp // 32,
+                                       self.num_groups)
         if self.use_concat_volume:
-            print('use_concat_volume')
-            concat_volume4 = build_concat_volume(features_left["concat_feature4"], features_right["concat_feature4"], self.maxdisp // 8)
-            concat_volume5 = build_concat_volume(features_left["concat_feature5"], features_right["concat_feature5"], self.maxdisp // 16)
-            concat_volume6 = build_concat_volume(features_left["concat_feature6"], features_right["concat_feature6"], self.maxdisp // 32)
+            concat_volume4 = build_concat_volume(features_left["concat_feature4"], features_right["concat_feature4"],
+                                                 self.maxdisp // 8)
+            concat_volume5 = build_concat_volume(features_left["concat_feature5"], features_right["concat_feature5"],
+                                                 self.maxdisp // 16)
+            concat_volume6 = build_concat_volume(features_left["concat_feature6"], features_right["concat_feature6"],
+                                                 self.maxdisp // 32)
             volume4 = torch.cat((gwc_volume4, concat_volume4), 1)
             volume5 = torch.cat((gwc_volume5, concat_volume5), 1)
             volume6 = torch.cat((gwc_volume6, concat_volume6), 1)
+
         else:
             volume4 = gwc_volume4
             volume5 = gwc_volume5
@@ -886,43 +971,44 @@ class cfnet(nn.Module):
             volume5_s = volume5
             volume6_s = volume6
 
-        volume6_m = self.cost_volum_modulation(sparse_out["sparse6"], sparse_mask_out["sparse_mask6"], None, volume6_s, self.maxdisp // 32)
-        volume5_m = self.cost_volum_modulation(sparse_out["sparse5"], sparse_mask_out["sparse_mask5"], None, volume5_s, self.maxdisp // 16)
-        volume4_m = self.cost_volum_modulation(sparse_out["sparse4"], sparse_mask_out["sparse_mask4"], None, volume4_s, self.maxdisp // 8)
+        volume6_m = self.cost_volum_modulation(sparse_out["sparse6"], sparse_mask_out["sparse_mask6"], None, volume6_s, self.maxdisp // 32, left_y_coordinate[:self.maxdisp // 32])
+        volume5_m = self.cost_volum_modulation(sparse_out["sparse5"], sparse_mask_out["sparse_mask5"], None, volume5_s, self.maxdisp // 16, left_y_coordinate[:self.maxdisp // 16])
+        volume4_m = self.cost_volum_modulation(sparse_out["sparse4"], sparse_mask_out["sparse_mask4"], None, volume4_s, self.maxdisp // 8, left_y_coordinate[:self.maxdisp // 8])
 
-        # mlu修改
         cost0_4 = self.dres0(volume4_m)
         cost0_4 = self.dres1(cost0_4) + cost0_4
+
         cost0_5 = self.dres0_5(volume5_m)
         cost0_5 = self.dres1_5(cost0_5) + cost0_5
         cost0_6 = self.dres0_6(volume6_m)
         cost0_6 = self.dres1_6(cost0_6) + cost0_6
         out1_4 = self.combine1(cost0_4, cost0_5, cost0_6)
         out2_4 = self.dres3(out1_4)
+
+
         cost2_s4 = self.classif2(out2_4)
         cost2_s4 = torch.squeeze(cost2_s4, 1)
         pred2_possibility_s4 = F.softmax(cost2_s4, dim=1)
-        pred2_s4 = disparity_regression(pred2_possibility_s4, self.maxdisp // 8).unsqueeze(1)
+        pred2_s4 = disparity_regression(pred2_possibility_s4, self.maxdisp // 8, left_y_coordinate[:self.maxdisp // 8]).unsqueeze(1)
         pred2_s4_cur = pred2_s4.detach()
-        pred2_v_s4 = disparity_variance(pred2_possibility_s4, self.maxdisp // 8, pred2_s4_cur)  # get the variance
+        #print('----pred2_possibility_s4',  pred2_possibility_s4.max(), pred2_possibility_s4.min())
+        #print('----pred2_s4_cur',  pred2_s4_cur.max(), pred2_s4_cur.min())
+        pred2_v_s4 = disparity_variance(pred2_possibility_s4, self.maxdisp // 8, pred2_s4_cur, left_y_coordinate[:self.maxdisp // 8]) # get the variance
         pred2_v_s4 = pred2_v_s4.sqrt()
-
-        #mindisparity_s3 = pred2_s4_cur - (self.gamma_s3 + 1) * pred2_v_s4 - self.beta_s3
-        #maxdisparity_s3 = pred2_s4_cur + (self.gamma_s3 + 1) * pred2_v_s4 + self.beta_s3
         mindisparity_s3 = pred2_s4_cur - pred2_v_s4
         maxdisparity_s3 = pred2_s4_cur + pred2_v_s4
-        maxdisparity_s3 = F.upsample(maxdisparity_s3 * 2, [left.size()[2] // 4, left.size()[3] // 4], mode='bilinear', align_corners=True)
-        mindisparity_s3 = F.upsample(mindisparity_s3 * 2, [left.size()[2] // 4, left.size()[3] // 4], mode='bilinear', align_corners=True)
-        mindisparity_s3_1, maxdisparity_s3_1 = self.generate_search_range(self.sample_count_s3 + 1, mindisparity_s3, maxdisparity_s3, scale=2)
+        maxdisparity_s3 = F.upsample(maxdisparity_s3 * 2, [left.size()[2] // 4, left.size()[3] // 4], mode='bilinear')
+        mindisparity_s3 = F.upsample(mindisparity_s3 * 2, [left.size()[2] // 4, left.size()[3] // 4], mode='bilinear')
 
-        disparity_samples_s3 = self.generate_disparity_samples(mindisparity_s3_1, maxdisparity_s3_1, self.sample_count_s3)  # 本该是long
+        mindisparity_s3_1, maxdisparity_s3_1 = self.generate_search_range(self.sample_count_s3 + 1, mindisparity_s3, maxdisparity_s3, scale=2)
+        disparity_samples_s3 = self.generate_disparity_samples(mindisparity_s3_1, maxdisparity_s3_1, self.sample_count_s3, left_y_coordinate[1: self.sample_count_s3 + 1])  # 本该是long
         warped_right_feature_map_left, gather_index, left_feature_map, right_feature_map = self.spatial_pre(left_y_coordinate, features_left["concat_feature3"], features_right["concat_feature3"], disparity_samples_s3, 256)
         warped_right_feature_map_left2, gather_index2, left_feature_map2, right_feature_map2 = self.spatial_pre(left_y_coordinate, features_left["gw3"], features_right["gw3"], disparity_samples_s3, 256)
         # warped_right_feature_map
-        #torch.Size([1, 16, 128, 256])  -->warped_right_feature_map_left
+        #torch.Size([1, 1, 16, 128, 256])  -->warped_right_feature_map_left
         #torch.Size([1, 12, 16, 128, 256])  --> left_feature_map
         # warped_right_feature_map2
-        #torch.Size([1, 16, 128, 256])  --> warped_right_feature_map_left2
+        #torch.Size([1, 1, 16, 128, 256])  --> warped_right_feature_map_left2
         #torch.Size([1, 160, 16, 128, 256])  --> left_feature_map2
         #torch.Size([1, 16, 128, 256])  -->disparity_samples_s3
         #torch.Size([1, 1, 1, 128, 256])
@@ -954,7 +1040,7 @@ class cfnet(nn.Module):
             disparity_samples_s3, feature_sparse['s3'], sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], \
             features_left["concat_feature2"], features_right["concat_feature2"], features_left["gw2"], features_right["gw2"], left_y_coordinate = input
 
-        #warped_right_feature_map = torch.gather(right_feature_map.float(), dim=4, index=gather_index)
+        #warped_right_feature_map = torch.gather(right_feature_map.float(), dim=4, index=gather_ndex)
         #warped_right_feature_map2 = torch.gather(right_feature_map2.float(), dim=4, index=gather_index2)
         right_feature_map = warped_right_feature_map_left * warped_right_feature_map  # [1，12，16，128，256]
         right_feature_map2 = warped_right_feature_map_left2 * warped_right_feature_map2
@@ -966,36 +1052,38 @@ class cfnet(nn.Module):
         
         disparity_samples_s3 = disparity_samples_s3.unsqueeze(1)  # .float()
         confidence_v_s3 = torch.cat((confidence_v_gwc_s3, confidence_v_concat_s3, disparity_samples_s3), dim=1)
-        # add gaussian modulation
+        # add gaussian modulation 
         if self.sparse_feature_on:
             confidence_v_s3_s = torch.cat((confidence_v_s3, feature_sparse['s3'].repeat(1,1,confidence_v_s3.size()[2],1,1)), 1)
         else:
             confidence_v_s3_s = confidence_v_s3
+        #confidence_v_s3_m = self.cost_volum_modulation(sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], disparity_samples_s3, confidence_v_s3_s)
         disparity_samples_s3 = torch.squeeze(disparity_samples_s3, dim=1)
         confidence_v_s3_m = self.cost_volum_modulation(sparse_out["sparse3"], sparse_mask_out["sparse_mask3"], disparity_samples_s3, confidence_v_s3_s)
+
         cost0_s3 = self.confidence0_s3(confidence_v_s3_m)
         cost0_s3 = self.confidence1_s3(cost0_s3) + cost0_s3
+
         out1_s3 = self.confidence2_s3(cost0_s3)
         out2_s3 = self.confidence3_s3(out1_s3)
+
         cost1_s3 = self.confidence_classif1_s3(out2_s3).squeeze(1)
         cost1_s3_possibility = F.softmax(cost1_s3, dim=1)
         pred1_s3 = torch.sum(cost1_s3_possibility * disparity_samples_s3, dim=1, keepdim=True)
         pred1_s3_cur = pred1_s3.detach()
         pred1_v_s3 = disparity_variance_confidence(cost1_s3_possibility, disparity_samples_s3, pred1_s3_cur)
-        pred1_v_s3 = pred1_v_s3.sqrt()
 
-        #mindisparity_s2 = pred2_s3_cur - (self.gamma_s3 + 1) * pred2_v_s4 - self.beta_s3
-        #maxdisparity_s2 = pred2_s3_cur + (self.gamma_s3 + 1) * pred2_v_s4 + self.beta_s3
+        #print('----cost1_s3_possibility',  cost1_s3_possibility.max(), cost1_s3_possibility.min())
+        #print('----disparity_samples_s3',  disparity_samples_s3.max(), disparity_samples_s3.min())
+        #print('----pred1_s2',  pred1_s3_cur.max(), pred1_s3_cur.min())
+        pred1_v_s3 = pred1_v_s3.sqrt()
         mindisparity_s2 = pred1_s3_cur - pred1_v_s3
         maxdisparity_s2 = pred1_s3_cur + pred1_v_s3
-
-        maxdisparity_s2 = F.upsample(maxdisparity_s2 * 2, [512 // 2, 1024 // 2], mode='bilinear', align_corners=True)  # left.size()
-        mindisparity_s2 = F.upsample(mindisparity_s2 * 2, [512 // 2, 1024 // 2], mode='bilinear', align_corners=True)  # left.size()
+        maxdisparity_s2 = F.upsample(maxdisparity_s2 * 2, [512 // 2, 1024 // 2], mode='bilinear')  # left.size()
+        mindisparity_s2 = F.upsample(mindisparity_s2 * 2, [512 // 2, 1024 // 2], mode='bilinear')  # left.size()
         mindisparity_s2_1, maxdisparity_s2_1 = self.generate_search_range(self.sample_count_s2 + 1, mindisparity_s2, maxdisparity_s2, scale=1)
 
-
-        disparity_samples_s2 = self.generate_disparity_samples(mindisparity_s2_1, maxdisparity_s2_1, self.sample_count_s2)
-        
+        disparity_samples_s2 = self.generate_disparity_samples(mindisparity_s2_1, maxdisparity_s2_1, self.sample_count_s2, left_y_coordinate[1: self.sample_count_s2 + 1])
         warped_right_feature_map_left3, gather_index3, left_feature_map3, right_feature_map3 = self.spatial_pre(left_y_coordinate, features_left["concat_feature2"], features_right["concat_feature2"], disparity_samples_s2, 512)
         warped_right_feature_map_left4, gather_index4, left_feature_map4, right_feature_map4 = self.spatial_pre(left_y_coordinate, features_left["gw2"], features_right["gw2"], disparity_samples_s2, 512)
         
@@ -1036,34 +1124,25 @@ class cfnet(nn.Module):
         
         disparity_samples_s2 = disparity_samples_s2.unsqueeze(1)  # .float()
         confidence_v_s2 = torch.cat((confidence_v_gwc_s2, confidence_v_concat_s2, disparity_samples_s2), dim=1)
-        # add gaussian modulation
+        # add gaussian modulation 
         if self.sparse_feature_on:
             confidence_v_s2_s = torch.cat((confidence_v_s2, feature_sparse['s2'].repeat(1,1,confidence_v_s2.size()[2],1,1)), 1)
         else:
             confidence_v_s2_s = confidence_v_s2
+        #confidence_v_s2_m = self.cost_volum_modulation(sparse_out["sparse2"], sparse_mask_out["sparse_mask2"], disparity_samples_s2, confidence_v_s2_s)
         disparity_samples_s2 = torch.squeeze(disparity_samples_s2, dim=1)
         confidence_v_s2_m = self.cost_volum_modulation(sparse_out["sparse2"], sparse_mask_out["sparse_mask2"], disparity_samples_s2, confidence_v_s2_s)
 
         cost0_s2 = self.confidence0_s2(confidence_v_s2_m)
-        # to here
-        cost0_s2 = self.confidence1_s2(cost0_s2)  + cost0_s2  # torch.Size([1, 16, 12, 256, 512])
+        cost0_s2 = self.confidence1_s2(cost0_s2) + cost0_s2
+
         out1_s2 = self.confidence2_s2(cost0_s2)
         out2_s2 = self.confidence3_s2(out1_s2)
+
         cost1_s2 = self.confidence_classif1_s2(out2_s2).squeeze(1)
         cost1_s2_possibility = F.softmax(cost1_s2, dim=1)
         pred1_s2 = torch.sum(cost1_s2_possibility * disparity_samples_s2, dim=1, keepdim=True)
 
-        return pred1_s2
-
-        res = [pred1_s2]
-        res += [disparity_samples_s2, disparity_samples_s3]
-        for item in [features_left, features_right]:
-            for k in item:
-                res.append(item[k])
-                print(k)
-        for item in res:
-            print(item.shape)
-        return tuple(res)
 
         # pred1_v_s2 = disparity_variance_confidence(cost1_s2_possibility, disparity_samples_s2, pred1_s2)
         # pred1_v_s2 = pred1_v_s2.sqrt()
@@ -1075,7 +1154,7 @@ class cfnet(nn.Module):
         # pred1_s3_up = F.upsample(pred1_s3 * 8, [4*left.size()[2], 2*left.size()[3]], mode='bilinear', align_corners=True)
         # pred1_s3_up = torch.squeeze(pred1_s3_up, 1)
         # print([4*left.size()[2], 2*left.size()[3]], pred1_s2.cpu().shape)  # [2048, 2048] torch.Size([1, 1, 256, 512])
-        pred1_s2 = F.upsample(pred1_s2 * 4, [4*left.size()[2], 2*left.size()[3]], mode='bilinear', align_corners=True)
+        pred1_s2 = F.upsample(pred1_s2 * 4, [4*left.size()[2], 2*left.size()[3]], mode='bilinear')
         pred1_s2 = torch.squeeze(pred1_s2, 1)
 
         print('net done')

@@ -3,5 +3,6 @@
 *.cambricon_twins
 OUTPUT*
 build/
-
+output/
+data/
 
