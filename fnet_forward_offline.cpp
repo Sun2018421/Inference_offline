@@ -36,8 +36,6 @@ void readData(float* data, int length, std::string filename) {
 }
 
 void * gather_mlu(void * & input_tensor, int * input_shape, void * &index_tensor, int * index_shape , cnmlDimension_t dim, cnrtQueue_t &cnrt_queue){
-    // LOG(INFO)<<" input_shape "<<input_shape[0]<<" "<<input_shape[1]<<" "<<input_shape[2]<<" "<<input_shape[3];
-    // LOG(INFO)<<" index_shape "<<index_shape[0]<<" "<<index_shape[1]<<" "<<index_shape[2]<<" "<<index_shape[3];
     cnmlBaseOp_t cast_op = NULL;
     cnmlTensor_t cast_input = NULL;
     cnmlCreateTensor_V2(&cast_input, CNML_TENSOR);
@@ -55,19 +53,15 @@ void * gather_mlu(void * & input_tensor, int * input_shape, void * &index_tensor
     void * cast_output_mlu = NULL;
     cnrtRet_t res = cnrtMalloc(&cast_output_mlu, index_shape[0]*index_shape[1]*index_shape[2]*index_shape[3]*sizeof(int));
     assert(res == CNRT_RET_SUCCESS);
-    // LOG(INFO)<<"start Cast";
     cnmlStatus_t cast_ret =  cnmlComputeCastOpForward_V4(cast_op, NULL, cast_input_mlu_ptr, NULL, cast_output_mlu, cnrt_queue, NULL);
     if(cast_ret != CNML_STATUS_SUCCESS){
       LOG(FATAL)<<"Cast Failed and ret is" <<cast_ret ;
     }
-    // LOG(INFO)<<"Starting cnrtSyncQueue";
-    // cnrtQueryQueue(cnrt_queue);
     if (cnrtSyncQueue(cnrt_queue) == CNRT_RET_SUCCESS) {
       // LOG(INFO) << "Cast Done!";
     } else {
       LOG(FATAL) << "SyncQueue Error ";
     }
-    // cnrtQueryQueue(cnrt_queue);
     
     cnmlTensor_t gather_input_tensor = NULL;
     cnmlCreateTensor_V2(&gather_input_tensor, CNML_TENSOR);    
@@ -132,10 +126,8 @@ int main(int argc, char* argv[]) {
   cnrtSetCurrentDevice(dev);
   cnrtModel_t model;
   std::string fname = (std::string)"cfnet1.cambricon";
-  // LOG(INFO) << "load file: " << fname;
   int size;
   cnrtGetModelSize(fname.c_str(), &size);
-  // LOG(INFO) << "model size: " << size;
   cnrtLoadModel(&model, fname.c_str());
   cnrtFunction_t function;
   cnrtRuntimeContext_t rt_ctx_;
@@ -148,7 +140,6 @@ int main(int argc, char* argv[]) {
   assert(cnrtExtractFunction(&function, model, name.c_str())==CNRT_RET_SUCCESS);
   cnrtCreateRuntimeContext(&rt_ctx_, function, NULL);
 
-  // 3. get function's I/O DataDesc
   int inputNum, outputNum;
   int64_t* inputSizeS = nullptr;
   int64_t* outputSizeS = nullptr;
@@ -158,7 +149,6 @@ int main(int argc, char* argv[]) {
   cnrtDataType_t* output_data_type = nullptr;
   cnrtGetInputDataType(&input_data_type, &inputNum, function);
   cnrtGetOutputDataType(&output_data_type, &outputNum, function);
-  // 4. allocate I/O data space on CPU memory and prepare Input data
   void** inputCpuPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum));
   std::vector<int> in_count;
   std::vector<int> out_count;
@@ -208,8 +198,7 @@ int main(int argc, char* argv[]) {
     out_w = shape[2];
     // LOG(INFO)<< "output shape: ["<<i<<"] "<< out_n << " " << out_c << " " << out_h << " " << out_w;
   }
-  // 5. allocate I/O data space on MLU memory and copy Input data
-  // Only 1 batch so far
+
   void** inputMluPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum));
   // cfnet1: left, right, sparse, sparse_mask, left_y_coordinate
   void** outputMluPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
@@ -267,7 +256,6 @@ int main(int argc, char* argv[]) {
       temp_input_cpu_data = nullptr;
     }
   }
-  // free(tempPtrS);
 
   // create start_event and end_event
   cnrtNotifier_t notifierBeginning, notifierEnd;
@@ -401,11 +389,6 @@ int main(int argc, char* argv[]) {
   cnrtUnloadModel(model);
   cnrtDestroyFunction(function);
 
-  // // 判断是不是memory的问题
-  // for(int i = 0 ; i< outputNum ; i++){
-  //   cnrtFree(outputMluPtrS[i]);
-  // }
-
   gettimeofday(&tpend,NULL);
   execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
     tpend.tv_usec - tpstart.tv_usec;
@@ -417,10 +400,8 @@ int main(int argc, char* argv[]) {
   cnrtRuntimeContext_t ctx2;
   cnrtQueue_t queue2;
   std::string fname2 = (std::string)"cfnet2.cambricon";
-  // LOG(INFO) << "load file: " << fname2;
   int size2;
   cnrtGetModelSize(fname2.c_str(), &size2);
-  // LOG(INFO) << "model size: " << size2;
   assert(cnrtLoadModel(&model2, fname2.c_str())==CNRT_RET_SUCCESS);
   cnrtFunction_t function2;
   std::string name2 = (std::string)"subnet0";
@@ -433,10 +414,8 @@ int main(int argc, char* argv[]) {
     LOG(FATAL)<<"Failed to initialize runtime context";
   }
 
-  //new queue 
   cnrtRuntimeContextCreateQueue(ctx2,&queue2);
 
-  // 创建模型输出内存
   int inputNum2;
   int outputNum2;
   int64_t* inputSizeS2 = nullptr;
@@ -448,14 +427,11 @@ int main(int argc, char* argv[]) {
   cnrtDataType_t * output_data_type2 = nullptr;
   cnrtGetInputDataType(&input_data_type2, &inputNum2, function2);
   cnrtGetOutputDataType(&output_data_type2, &outputNum2, function2);
-  // LOG(INFO)<<"inputNum2 "<<inputNum2<<" outputNum2 "<<outputNum2;
+
   void ** param2 = reinterpret_cast<void**>(malloc(sizeof(void*) * (inputNum2 + outputNum2)));
-  // 分配输出的MLU空间
   void ** inputMluPtrS2 = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum2));
   void ** outputMluPtrS2 = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum2));
-  // for(int i = 0 ; i< inputNum2 ; i++){
-  //   assert(cnrtMalloc(&inputMluPtrS2[i], inputSizeS2[i])==CNRT_RET_SUCCESS);
-  // }
+
 
   cnrtFree(outputMluPtrS[3]);
   cnrtFree(outputMluPtrS[5]);
@@ -506,8 +482,37 @@ int main(int argc, char* argv[]) {
       case 13:
         inputMluPtrS2[0] = outputMluPtrS[15];
         break;
-      case 14:
+      case 14: 
+      // 1x1x1x512
+        int lin_ip = inputSizeS2[2] / cnrtDataTypeSize(input_data_type2[2]);
+        assert(lin_ip == 512);
+        auto databuf = reinterpret_cast<float*>(malloc(sizeof(float) * lin_ip));
+        linspace(0.0, 511, 512, databuf);
+        void * templin = reinterpret_cast<void*>(databuf);
+        void * tempshape = reinterpret_cast<void*> (malloc(sizeof(float)*lin_ip));
+        std::vector<int> sshape(4,1);
+        int tempdimNum = 4;
+        cnrtGetInputDataShape((int**)&sshape,&tempdimNum,2,function2);
+        int tempdim_order[4] = {0, 2, 3, 1};
+        int tempdim_shape[4] = {sshape[0], sshape[3],
+                        sshape[1], sshape[2]};  // NCHW
+        cnrtTransDataOrder(templin, CNRT_FLOAT32, tempshape,4,tempdim_shape, tempdim_order);
+        free(templin);
         cnrtMalloc(&inputMluPtrS2[2], inputSizeS2[2]);
+        void * temp_lin_cpu_data = (void*)malloc(inputSizeS2[2]);
+        if(input_data_type2[2] != CNRT_FLOAT32){
+          cnrtCastDataType(tempshape,
+                        CNRT_FLOAT32,
+                        temp_lin_cpu_data,
+                        input_data_type2[2],
+                        lin_ip,
+                        nullptr);
+        }
+        else{
+                          temp_lin_cpu_data = tempshape;
+                        }
+        free(tempshape);
+        cnrtMemcpy(inputMluPtrS2[2],temp_lin_cpu_data,inputSizeS2[2],CNRT_MEM_TRANS_DIR_HOST2DEV);
         break;
     }
   }
@@ -541,7 +546,6 @@ int main(int argc, char* argv[]) {
 
   gettimeofday(&tpstart,NULL);
 
-  // gather
   std::vector<int> shape_input2(5,1); int dimNum2 = 5;
   cnrtGetOutputDataShape((int **)&shape_input2, &dimNum2, 3, function2);
   // LOG(INFO)<<"the shape of right_feature_map: "<<" "<<shape_input[1]<<" "<<shape_input[2]<<" "<<shape_input[3]<<" "<<shape_input[4];
@@ -550,8 +554,6 @@ int main(int argc, char* argv[]) {
   cnrtGetOutputDataShape((int **)&shape_index2, &dimNum_index2, 1, function2);
   int index_shape2[] = {shape_index2[1], shape_index2[2], shape_index2[3], shape_index2[4]};
   void* gather_output1_mlu_cfnet2 = gather_mlu(outputMluPtrS2[3], input_shape2, outputMluPtrS2[1],index_shape2,CNML_DIM_C,queue2);
-  
-  // void* gather_output1_mlu_cfnet22 = gather_mlu(outputMluPtrS2[3], input_shape2, outputMluPtrS2[1],index_shape2,CNML_DIM_C,cnrt_queue);
   
   cnrtGetOutputDataShape((int **)&shape_input2, &dimNum2, 7, function2);
   input_shape2[0] = shape_input2[1]; input_shape2[1] = shape_input2[2]; input_shape2[2] = shape_input2[3]; input_shape2[3] = shape_input2[4];
@@ -570,9 +572,6 @@ int main(int argc, char* argv[]) {
   cnrtFree(outputMluPtrS2[7]);
   cnrtFree(outputMluPtrS2[1]);
 
-  // for (int i = 0 ; i < outputNum2; i++)
-  //     cnrtFree(outputMluPtrS2[i]);
-    
   gettimeofday(&tpend,NULL);
   execTime = 1000000 * (tpend.tv_sec - tpstart.tv_sec) +
     tpend.tv_usec - tpstart.tv_usec;
@@ -599,7 +598,7 @@ int main(int argc, char* argv[]) {
   if (initret != CNRT_RET_SUCCESS){
     LOG(FATAL)<<"Failed to initialize runtime context";
   }
-  //new queue 
+
   cnrtRuntimeContextCreateQueue(ctx3,&queue3);
 
   int inputNum3;
@@ -612,14 +611,9 @@ int main(int argc, char* argv[]) {
   cnrtDataType_t * output_data_type3 = nullptr;
   cnrtGetInputDataType(&input_data_type3, &inputNum3, function3);
   cnrtGetOutputDataType(&output_data_type3, &outputNum3, function3);
-  // LOG(INFO)<<"inputNum3 "<<inputNum3<<" outputNum3 "<<outputNum3;
   void ** param3 = reinterpret_cast<void**>(malloc(sizeof(void*) * (inputNum3 + outputNum3)));
-  // 分配输出的MLU空间
   void ** inputMluPtrS3 = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum3));
   void ** outputMluPtrS3 = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum3));
-  // for(int i = 0 ; i< inputNum3 ; i++){
-  //   assert(cnrtMalloc(&inputMluPtrS3[i], inputSizeS3[i])==CNRT_RET_SUCCESS);
-  // }
 
   for(int i = 0 ; i<  inputNum3; i++){
     switch(i){
