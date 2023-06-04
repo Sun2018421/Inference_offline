@@ -163,7 +163,7 @@ int main(int argc, char* argv[]) {
         readData(databuf,ip,"../data/imgl_data.txt");
       break;
       case 4:
-        readData(databuf,ip,"../data/imgl_data.txt");
+        readData(databuf,ip,"../data/imgR_data.txt");
       break;
       case 3:
         readData(databuf,ip,"../data/disp_sparse_data.txt");
@@ -293,44 +293,44 @@ int main(int argc, char* argv[]) {
 */
 
   std::string output_path = "../output/";
-  // void ** outputCpuPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
-  // void * temp_output_cpu_data = nullptr;
-  // for(int i = 0; i < outputNum ; i++){
-  //   temp_output_cpu_data = (void*)malloc(outputSizeS[i]);
-  //   cnrtMemcpy(temp_output_cpu_data,
-  //             outputMluPtrS[i],
-  //             outputSizeS[i],
-  //             CNRT_MEM_TRANS_DIR_DEV2HOST);
-  //   LOG(INFO)<<"copy done.";
-  //   int output_count = outputSizeS[i] / cnrtDataTypeSize(output_data_type[i]);
-  //   outputCpuPtrS[i] = reinterpret_cast<void*>(reinterpret_cast<float*>(malloc(sizeof(float) * output_count)));
-  //   if (output_data_type[i] != CNRT_FLOAT32) {
-  //     cnrtCastDataType(temp_output_cpu_data,
-  //                       output_data_type[i],
-  //                       outputCpuPtrS[i],
-  //                       CNRT_FLOAT32,
-  //                       output_count,
-  //                       nullptr);
-  //   } else {
-  //     memcpy(outputCpuPtrS[i], temp_output_cpu_data, outputSizeS[i]);
-  //   }
-  //   LOG(INFO)<< "cast done.";
-  //   std::stringstream ss;
-  //   ss << output_path << fname << "_output_" << i;
-  //   std::string output_name = ss.str();
-  //   LOG(INFO)<<"writing output to "<<output_name;
-  //   std::ofstream fout(output_name, std::ios::out);
-  //   fout << std::flush;
-  //   for(int j = 0 ; j < output_count; j++){
-  //     fout << ((float*)outputCpuPtrS[i])[j] << std::endl;
-  //   }
-  //   fout<<std::flush;
-  //   fout.close();
-  //   free(outputCpuPtrS[i]);
-  //   free(temp_output_cpu_data);
-  //   temp_output_cpu_data = nullptr;
-  // }
-  // free(outputCpuPtrS);
+  void ** outputCpuPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
+  void * temp_output_cpu_data = nullptr;
+  for(int i = 0; i < outputNum ; i++){
+    temp_output_cpu_data = (void*)malloc(outputSizeS[i]);
+    cnrtMemcpy(temp_output_cpu_data,
+              outputMluPtrS[i],
+              outputSizeS[i],
+              CNRT_MEM_TRANS_DIR_DEV2HOST);
+    LOG(INFO)<<"copy done.";
+    int output_count = outputSizeS[i] / cnrtDataTypeSize(output_data_type[i]);
+    outputCpuPtrS[i] = reinterpret_cast<void*>(reinterpret_cast<float*>(malloc(sizeof(float) * output_count)));
+    if (output_data_type[i] != CNRT_FLOAT32) {
+      cnrtCastDataType(temp_output_cpu_data,
+                        output_data_type[i],
+                        outputCpuPtrS[i],
+                        CNRT_FLOAT32,
+                        output_count,
+                        nullptr);
+    } else {
+      memcpy(outputCpuPtrS[i], temp_output_cpu_data, outputSizeS[i]);
+    }
+    LOG(INFO)<< "cast done.";
+    std::stringstream ss;
+    ss << output_path << fname << "_output_" << i;
+    std::string output_name = ss.str();
+    LOG(INFO)<<"writing output to "<<output_name;
+    std::ofstream fout(output_name, std::ios::out);
+    fout << std::flush;
+    for(int j = 0 ; j < output_count; j++){
+      fout << ((float*)outputCpuPtrS[i])[j] << std::endl;
+    }
+    fout<<std::flush;
+    fout.close();
+    free(outputCpuPtrS[i]);
+    free(temp_output_cpu_data);
+    temp_output_cpu_data = nullptr;
+  }
+  free(outputCpuPtrS);
 
 
   gettimeofday(&tpstart,NULL);
@@ -352,32 +352,32 @@ int main(int argc, char* argv[]) {
     output_size,
     CNRT_MEM_TRANS_DIR_DEV2HOST);
 
-  // int output_gather_count = output_size / cnrtDataTypeSize(output_data_type[3]);
-  // void * output_gather_cpu_data = (void *)malloc(sizeof(float) * output_gather_count);
-  // if (output_data_type[3] != CNRT_FLOAT32) {
-  //   cnrtCastDataType(temp_output_gather_cpu_data,
-  //                     output_data_type[3],
-  //                     output_gather_cpu_data,
-  //                     CNRT_FLOAT32,
-  //                     output_gather_count,
-  //                     nullptr);
-  // } else {
-  //   memcpy(output_gather_cpu_data, temp_output_gather_cpu_data, output_size);
-  // }
-  // std::stringstream ss;
-  // ss << output_path << fname << "gather_output" ;
-  // std::string output_name = ss.str();
-  // LOG(INFO)<<"writing output to "<<output_name;
-  // std::ofstream fout(output_name, std::ios::out);
-  // fout << std::flush;
-  // for(int j = 0 ; j < output_gather_count; j++){
-  //   fout << ((float*)output_gather_cpu_data)[j] << std::endl;
-  // }
-  // fout<<std::flush;
-  // fout.close();
-  // free(output_gather_cpu_data);
-  // free(temp_output_gather_cpu_data);
-  // temp_output_gather_cpu_data = nullptr;
+  int output_gather_count = output_size / cnrtDataTypeSize(output_data_type[3]);
+  void * output_gather_cpu_data = (void *)malloc(sizeof(float) * output_gather_count);
+  if (output_data_type[3] != CNRT_FLOAT32) {
+    cnrtCastDataType(temp_output_gather_cpu_data,
+                      output_data_type[3],
+                      output_gather_cpu_data,
+                      CNRT_FLOAT32,
+                      output_gather_count,
+                      nullptr);
+  } else {
+    memcpy(output_gather_cpu_data, temp_output_gather_cpu_data, output_size);
+  }
+  std::stringstream ss;
+  ss << output_path << fname << "gather_output" ;
+  std::string output_name = ss.str();
+  LOG(INFO)<<"writing output to "<<output_name;
+  std::ofstream fout(output_name, std::ios::out);
+  fout << std::flush;
+  for(int j = 0 ; j < output_gather_count; j++){
+    fout << ((float*)output_gather_cpu_data)[j] << std::endl;
+  }
+  fout<<std::flush;
+  fout.close();
+  free(output_gather_cpu_data);
+  free(temp_output_gather_cpu_data);
+  temp_output_gather_cpu_data = nullptr;
 
   cnrtGetOutputDataShape((int **)&shape_input, &dimNum, 7, function);
   input_shape[0] = shape_input[1]; input_shape[1] = shape_input[2]; input_shape[2] = shape_input[3]; input_shape[3] = shape_input[4];
