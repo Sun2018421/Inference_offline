@@ -139,7 +139,6 @@ int main(int argc, char* argv[]) {
   cnrtCreateFunction(&function);
   assert(cnrtExtractFunction(&function, model, name.c_str())==CNRT_RET_SUCCESS);
   cnrtCreateRuntimeContext(&rt_ctx_, function, NULL);
-
   int inputNum, outputNum;
   int64_t* inputSizeS = nullptr;
   int64_t* outputSizeS = nullptr;
@@ -160,10 +159,10 @@ int main(int argc, char* argv[]) {
     auto databuf = reinterpret_cast<float*>(malloc(sizeof(float) * ip)); 
     switch(i){
       case 1:
-        readData(databuf,ip,"../data/imgl_data.txt");
+        readData(databuf,ip,"../data/imgR_data.txt");
       break;
       case 4:
-        readData(databuf,ip,"../data/imgR_data.txt");
+        readData(databuf,ip,"../data/imgl_data.txt");
       break;
       case 3:
         readData(databuf,ip,"../data/disp_sparse_data.txt");
@@ -184,7 +183,6 @@ int main(int argc, char* argv[]) {
     in_c = (input_data_type[i] == CNRT_UINT8) ? (shape[3] - 1) : shape[3]; 
     in_h = shape[1];
     in_w = shape[2];
-    // LOG(INFO)<< "input shape: ["<<i<<"] "<< in_n << " " << in_c << " " << in_h << " " << in_w;
   }
   for (int i = 0; i < outputNum; i++) {
     int op = outputSizeS[i] / cnrtDataTypeSize(output_data_type[i]);
@@ -289,11 +287,12 @@ int main(int argc, char* argv[]) {
     tpend.tv_usec - tpstart.tv_usec;
   LOG(INFO) << " cfnet1 time: " << execTime << " us";
 
-/* 将模型输出保存出来，未改变数据布局，还是NCHW
+/* 将模型输出保存出来，改变数据布局，NHWC->NCHW
 */
 
   std::string output_path = "../output/";
   void ** outputCpuPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
+  void ** outPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
   void * temp_output_cpu_data = nullptr;
   for(int i = 0; i < outputNum ; i++){
     temp_output_cpu_data = (void*)malloc(outputSizeS[i]);
@@ -314,7 +313,21 @@ int main(int argc, char* argv[]) {
     } else {
       memcpy(outputCpuPtrS[i], temp_output_cpu_data, outputSizeS[i]);
     }
-    LOG(INFO)<< "cast done.";
+    if(i == 8|| i==10|| i==11 || i==12 || i==13|| i==14|| i==15 || i==17 || i==18){
+      outPtrS[i] = reinterpret_cast<void*>(reinterpret_cast<float*>(malloc(sizeof(float) * output_count)));
+      std::vector<int> shape_for_output_cast(4, 1);
+      int dimNum_for_output_cast = 4;
+      cnrtGetOutputDataShape((int**)&shape_for_output_cast, &dimNum_for_output_cast, i, function);
+      int dim_order_for_output_cast[4] = {0, 3, 1, 2};
+      int dim_shape_for_output_cast[4] = {shape_for_output_cast[0], shape_for_output_cast[1],
+                          shape_for_output_cast[2], shape_for_output_cast[3]};  // NHWC
+                        
+      cnrtRet_t ret = cnrtTransDataOrder(outputCpuPtrS[i], CNRT_FLOAT32, outPtrS[i],
+                          4, dim_shape_for_output_cast, dim_order_for_output_cast);
+      assert(ret == CNRT_RET_SUCCESS);
+    }else{
+      outPtrS[i] = outputCpuPtrS[i];
+    }
     std::stringstream ss;
     ss << output_path << fname << "_output_" << i;
     std::string output_name = ss.str();
@@ -322,11 +335,14 @@ int main(int argc, char* argv[]) {
     std::ofstream fout(output_name, std::ios::out);
     fout << std::flush;
     for(int j = 0 ; j < output_count; j++){
-      fout << ((float*)outputCpuPtrS[i])[j] << std::endl;
+      fout << (reinterpret_cast<float*>(outPtrS[i]))[j] << std::endl;
     }
     fout<<std::flush;
     fout.close();
     free(outputCpuPtrS[i]);
+    if((i == 8|| i==10|| i==11 || i==12 || i==13|| i==14|| i==15 || i==17 || i==18)){
+      free(outPtrS[i]);
+    }
     free(temp_output_cpu_data);
     temp_output_cpu_data = nullptr;
   }
