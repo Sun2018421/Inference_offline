@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 count =  0 ;
 # filelist = [[input_file0_o,input_file0_m],[input_file1_o,input_file1_m],[file1,file2]]
 for f in tqdm(filelist):
-    data1 = np.loadtxt("data/"+f[0])
+    data1 = np.loadtxt("data_6_5/"+f[0])
     data2 = np.loadtxt("output/"+f[1])
     logging.info("comparing " + f[0] + " and " + f[1])
     assert data1.size == data2.size, "size not equal."

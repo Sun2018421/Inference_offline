@@ -9,12 +9,6 @@
 #include <vector>
 #include <cnml.h>
 #include <assert.h>
-DEFINE_int32(mludevice, 0, "set using mlu device number, default: 0");
-DEFINE_int32(input_data_count, -1, "the input file count,default: -1, get rand  data");
-// support three input data
-DEFINE_string(input1, " ", "the input file name of the offline model");
-DEFINE_string(input2, " ", "the input file name of the offline model");
-DEFINE_string(input3, " ", "the input file name of the offline model");
 
 void linspace(float start, float stop, int num,float * data){
   float step = (stop - start)/(num - 1);
@@ -22,6 +16,7 @@ void linspace(float start, float stop, int num,float * data){
     data[i] = start + step * i ;
   }
 }
+
 void readData(float* data, int length, std::string filename) {
     std::ifstream file;
     file.open(filename);
@@ -103,23 +98,11 @@ void * gather_mlu(void * & input_tensor, int * input_shape, void * &index_tensor
  }
 
 int main(int argc, char* argv[]) {
-  google::InitGoogleLogging(argv[0]);
-  // Print output to stderr (while still logging)
-  FLAGS_alsologtostderr = 1;
-#ifndef GFLAGS_GFLAGS_H_
-  namespace gflags = google;
-#endif
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
   cnrtInit(0);
   unsigned devNum;
   cnrtGetDeviceCount(&devNum);
   LOG(INFO)<<"there is "<<devNum<<" MLU device";
-  if (FLAGS_mludevice >= 0) {
-    CHECK_NE(devNum, 0) << "No device found";
-    CHECK_LE(FLAGS_mludevice, devNum) << "valid device count: " << devNum;
-  } else {
-    LOG(FATAL) << "Invalid device number";
-  }
+
   cnrtDev_t dev;
   int Dev_use = 0;
   cnrtGetDeviceHandle(&dev, Dev_use); 
@@ -131,8 +114,7 @@ int main(int argc, char* argv[]) {
   cnrtLoadModel(&model, fname.c_str());
   cnrtFunction_t function;
   cnrtRuntimeContext_t rt_ctx_;
-  unsigned int in_n, in_c, in_h, in_w;
-  unsigned int out_n, out_c, out_h, out_w;
+
   struct timeval tpend, tpstart;
   gettimeofday(&tpstart, NULL);
   std::string name = (std::string)"subnet0";
@@ -148,14 +130,13 @@ int main(int argc, char* argv[]) {
   cnrtDataType_t* output_data_type = nullptr;
   cnrtGetInputDataType(&input_data_type, &inputNum, function);
   cnrtGetOutputDataType(&output_data_type, &outputNum, function);
+
   void** inputCpuPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum));
-  std::vector<int> in_count;
-  std::vector<int> out_count;
-  void** param =
-      reinterpret_cast<void**>(malloc(sizeof(void*) * (inputNum + outputNum)));
-  srand(10);
+  void** param = reinterpret_cast<void**>(malloc(sizeof(void*) * (inputNum + outputNum)));
+
   for (int i = 0; i < inputNum; i++) {
     int ip = inputSizeS[i] / cnrtDataTypeSize(input_data_type[i]); 
+    LOG(INFO)<<"the "<<i<<" input elements is "<<ip;
     auto databuf = reinterpret_cast<float*>(malloc(sizeof(float) * ip)); 
     switch(i){
       case 1:
@@ -174,31 +155,10 @@ int main(int argc, char* argv[]) {
         linspace(0.0,255,256,databuf);
       break;
     }
-    in_count.push_back(ip);
     inputCpuPtrS[i] = reinterpret_cast<void*>(databuf);  // NCHW
-    std::vector<int> shape(4, 1);
-    int dimNum = 4;
-    cnrtGetInputDataShape((int**)&shape, &dimNum, i, function);  // NHWC
-    in_n = shape[0];
-    in_c = (input_data_type[i] == CNRT_UINT8) ? (shape[3] - 1) : shape[3]; 
-    in_h = shape[1];
-    in_w = shape[2];
-  }
-  for (int i = 0; i < outputNum; i++) {
-    int op = outputSizeS[i] / cnrtDataTypeSize(output_data_type[i]);
-    out_count.push_back(op);
-    std::vector<int> shape(4, 1);
-    int dimNum = 4;
-    cnrtGetOutputDataShape((int**)&shape, &dimNum, i, function);  // NHWC
-    out_n = shape[0];
-    out_c = shape[3];
-    out_h = shape[1];
-    out_w = shape[2];
-    // LOG(INFO)<< "output shape: ["<<i<<"] "<< out_n << " " << out_c << " " << out_h << " " << out_w;
   }
 
   void** inputMluPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum));
-  // cfnet1: left, right, sparse, sparse_mask, left_y_coordinate
   void** outputMluPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * outputNum));
 
   for (int i = 0; i < inputNum; i++) {
@@ -213,11 +173,7 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < outputNum; i++) {
     param[inputNum + i] = outputMluPtrS[i];
   }
-
-  cnrtQueue_t cnrt_queue;
-  cnrtCreateQueue(&cnrt_queue);
-  cnrtSetRuntimeContextDeviceId(rt_ctx_, Dev_use);
-  cnrtInitRuntimeContext(rt_ctx_, NULL);
+  // 更换维度
   void** tempPtrS = reinterpret_cast<void**>(malloc(sizeof(void*) * inputNum));
   void* temp_input_cpu_data = nullptr;
   for (int i = 0; i < inputNum; i++) {
@@ -227,10 +183,12 @@ int main(int argc, char* argv[]) {
     std::vector<int> shape(4, 1);
     int dimNum = 4;
     cnrtGetInputDataShape((int**)&shape, &dimNum, i, function);
+    // 输出每个输入的形状
+    LOG(INFO)<<"the shape of input "<<i<<" is "<<shape[0]<<" "<<shape[1]<<" "<<shape[2]<<" "<<shape[3];    
     int dim_order[4] = {0, 2, 3, 1};
     int dim_shape[4] = {shape[0], shape[3],
                         shape[1], shape[2]};  // NCHW
-    cnrtTransDataOrder(inputCpuPtrS[i], CNRT_FLOAT32, tempPtrS[i],
+    cnrtTransDataOrder(inputCpuPtrS[i], CNRT_FLOAT32, tempPtrS[i], //TODO: float32->float16
                         4, dim_shape, dim_order);
     temp_input_cpu_data = (void*)malloc(inputSizeS[i]);
     int input_count = inputSizeS[i] / cnrtDataTypeSize(input_data_type[i]);
@@ -255,7 +213,10 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // create start_event and end_event
+  cnrtQueue_t cnrt_queue;
+  cnrtCreateQueue(&cnrt_queue);
+  cnrtSetRuntimeContextDeviceId(rt_ctx_, Dev_use);
+  cnrtInitRuntimeContext(rt_ctx_, NULL);
   cnrtNotifier_t notifierBeginning, notifierEnd;
   cnrtCreateNotifier(&notifierBeginning);
   cnrtCreateNotifier(&notifierEnd);
@@ -300,7 +261,6 @@ int main(int argc, char* argv[]) {
               outputMluPtrS[i],
               outputSizeS[i],
               CNRT_MEM_TRANS_DIR_DEV2HOST);
-    LOG(INFO)<<"copy done.";
     int output_count = outputSizeS[i] / cnrtDataTypeSize(output_data_type[i]);
     outputCpuPtrS[i] = reinterpret_cast<void*>(reinterpret_cast<float*>(malloc(sizeof(float) * output_count)));
     if (output_data_type[i] != CNRT_FLOAT32) {
@@ -326,8 +286,19 @@ int main(int argc, char* argv[]) {
                           4, dim_shape_for_output_cast, dim_order_for_output_cast);
       assert(ret == CNRT_RET_SUCCESS);
     }else{
-      outPtrS[i] = outputCpuPtrS[i];
+      outPtrS[i] = reinterpret_cast<void*>(reinterpret_cast<float*>(malloc(sizeof(float) * output_count)));
+      std::vector<int> shape_for_output_cast(5, 1);
+      int dimNum_for_output_cast = 4;
+      cnrtGetOutputDataShape((int**)&shape_for_output_cast, &dimNum_for_output_cast, i, function);
+      int dim_order_for_output_cast[4] = {0, 3, 1, 2};
+      int dim_shape_for_output_cast[4] = {shape_for_output_cast[1], shape_for_output_cast[2],
+                          shape_for_output_cast[3], shape_for_output_cast[4]};  // NHWC
+                        
+      cnrtRet_t ret = cnrtTransDataOrder(outputCpuPtrS[i], CNRT_FLOAT32, outPtrS[i],
+                          4, dim_shape_for_output_cast, dim_order_for_output_cast);
+      assert(ret == CNRT_RET_SUCCESS);
     }
+ 
     std::stringstream ss;
     ss << output_path << fname << "_output_" << i;
     std::string output_name = ss.str();
@@ -339,15 +310,13 @@ int main(int argc, char* argv[]) {
     }
     fout<<std::flush;
     fout.close();
+    
     free(outputCpuPtrS[i]);
-    if((i == 8|| i==10|| i==11 || i==12 || i==13|| i==14|| i==15 || i==17 || i==18)){
-      free(outPtrS[i]);
-    }
+    free(outPtrS[i]);
     free(temp_output_cpu_data);
     temp_output_cpu_data = nullptr;
   }
   free(outputCpuPtrS);
-
 
   gettimeofday(&tpstart,NULL);
 
