@@ -117,6 +117,7 @@ int main(int argc, char* argv[]) {
 
   struct timeval tpend, tpstart;
   gettimeofday(&tpstart, NULL);
+
   std::string name = (std::string)"subnet0";
   cnrtCreateFunction(&function);
   assert(cnrtExtractFunction(&function, model, name.c_str())==CNRT_RET_SUCCESS);
@@ -140,10 +141,10 @@ int main(int argc, char* argv[]) {
     auto databuf = reinterpret_cast<float*>(malloc(sizeof(float) * ip)); 
     switch(i){
       case 1:
-        readData(databuf,ip,"../data/imgR_data.txt");
+        readData(databuf,ip,"../data/imgl_data.txt");
       break;
       case 4:
-        readData(databuf,ip,"../data/imgl_data.txt");
+        readData(databuf,ip,"../data/imgR_data.txt");
       break;
       case 3:
         readData(databuf,ip,"../data/disp_sparse_data.txt");
@@ -182,13 +183,13 @@ int main(int argc, char* argv[]) {
     tempPtrS[i] = reinterpret_cast<void*>(databuf);
     std::vector<int> shape(4, 1);
     int dimNum = 4;
-    cnrtGetInputDataShape((int**)&shape, &dimNum, i, function);
+    cnrtGetInputDataShape((int**)&shape, &dimNum, i, function); // NHWC
     // 输出每个输入的形状
     LOG(INFO)<<"the shape of input "<<i<<" is "<<shape[0]<<" "<<shape[1]<<" "<<shape[2]<<" "<<shape[3];    
-    int dim_order[4] = {0, 2, 3, 1};
+    int dim_order[4] = {0, 2, 3, 1}; // 0 1 2 3-> NCHW  
     int dim_shape[4] = {shape[0], shape[3],
-                        shape[1], shape[2]};  // NCHW
-    cnrtTransDataOrder(inputCpuPtrS[i], CNRT_FLOAT32, tempPtrS[i], //TODO: float32->float16
+                        shape[1], shape[2]};  // NCHW-> NHWC
+    cnrtTransDataOrder(inputCpuPtrS[i], CNRT_FLOAT32, tempPtrS[i], 
                         4, dim_shape, dim_order);
     temp_input_cpu_data = (void*)malloc(inputSizeS[i]);
     int input_count = inputSizeS[i] / cnrtDataTypeSize(input_data_type[i]);
