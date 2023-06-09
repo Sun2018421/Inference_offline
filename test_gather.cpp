@@ -66,18 +66,21 @@ int main(int argc, char* argv[]) {
   auto databuf_data = reinterpret_cast<float*>(malloc(sizeof(float) * data_size)); 
   
   // N C H W
-  readData(databuf_index, index_size, "../data_6_5/forward1_res[1].txt"); 
-  readData(databuf_data, data_size, "../data_6_5/forward1_res[3].txt");
+  readData(databuf_index, index_size, "../origin_gather_input/gather_input[1].txt"); 
+  readData(databuf_data, data_size, "../origin_gather_input/gather_input[0].txt");
 
   // N C H W -> N H W C
   // CNRTFLOAT32 -> CNRTFLOAT16
   // cnrtTransOrderAndCast
-  int shape_index[4] = {16,12,128,256};
-  int order_index[4] = {0,2,3,1};
+  int shape_index[4] = {12,16,128,256};
+  // int shape_index[4] = {1, 1, 1, 256};
+  // int order_index[4] = {0,2,3,1};
+  int order_index[4] = {0,1,2,3};
   void * index_mlu = float32_2_float16_and_NCHW_2_NHWC_MLU(databuf_index, CNRT_FLOAT32, index_size, CNRT_FLOAT16, 4, shape_index,order_index);
 
-  int shape_data[4] = {16,12,128,256};
-  int order_data[4] = {0,2,3,1};
+  int shape_data[4] = {12,16,128,256};
+  // int order_data[4] = {0,2,3,1};
+  int order_data[4] = {0,1,2,3};
   void * data_mlu = float32_2_float16_and_NCHW_2_NHWC_MLU(databuf_data, CNRT_FLOAT32, data_size, CNRT_FLOAT16, 4, shape_data, order_data);
 
   cnrtQueue_t cnrt_queue;
@@ -85,8 +88,10 @@ int main(int argc, char* argv[]) {
   void * gather_output_mlu = NULL;
   gather_output_mlu = gather_mlu(data_mlu, shape_data, index_mlu, shape_index, CNML_DIM_C , cnrt_queue);
 
-  int shape_output[4] = {16,128,256,12}; // NHWC
-  int order_output[4] = {0,3,1,2}; // NCHW
+  // int shape_output[4] = {16,128,256,12}; // NHWC
+  // int order_output[4] = {0,3,1,2}; // NCHW
+  int shape_output[4] = {12,16,128,256}; // NHWC
+  int order_output[4] = {0,1,2,3}; // NCHW
   void * res = float16_2_float32_and_NHWC_MLU_2_NCHW_CPU(gather_output_mlu, CNRT_FLOAT16, index_size, CNRT_FLOAT32, 4, shape_data, order_data);
 
   std::string output_path = "../mygather_output/";

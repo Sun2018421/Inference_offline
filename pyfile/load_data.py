@@ -31,7 +31,16 @@ def load_data(filename):
             print(d.shape)
             d = d.flatten(start_dim=0)
             np.savetxt(f"../gather_output/forward3_res[{i}].txt",d.numpy(),fmt="%.7f")
+    
+    if filename == "gather_input.pt":
+        data = torch.load(f"../origin_gather_input/gather_input.pt")
+        print(len(data))
+        for i, d in enumerate(data):
+            print(d.shape)
+            d = d.flatten(start_dim=0)
+            # np.savetxt(f"../origin_gather_input/gather_input[{i}].txt",d.numpy(),fmt="%.7f")
 
 if __name__ =='__main__':
     # load_data("forward1_res.pt")
-    load_data("forward3_res.pt")
+    # load_data("forward3_res.pt")
+    load_data("gather_input.pt")
